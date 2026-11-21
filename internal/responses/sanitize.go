@@ -15,6 +15,9 @@ type Request struct {
 	// Dropped names the parameters removed because the plan route rejects
 	// them, sorted.
 	Dropped []string
+	// Stream reports whether the caller asked for a stream. Upstream always
+	// streams.
+	Stream bool
 }
 
 // previewLimited lists, in sorted order, the parameters the plan route
@@ -68,13 +71,14 @@ func Sanitize(body []byte, strict bool) (Request, error) {
 		}
 		f["input"] = input
 	}
+	stream := string(f["stream"]) == "true"
 	f["store"] = json.RawMessage("false")
 	f["stream"] = json.RawMessage("true")
 	out, err := json.Marshal(f)
 	if err != nil {
 		return Request{}, fmt.Errorf("encode request: %w", err)
 	}
-	return Request{Body: out, Dropped: dropped}, nil
+	return Request{Body: out, Dropped: dropped, Stream: stream}, nil
 }
 
 // Error is a request the plan route cannot serve. It maps to a 400.

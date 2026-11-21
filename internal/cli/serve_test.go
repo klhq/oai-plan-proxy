@@ -103,3 +103,40 @@ func stopServe(t *testing.T, cancel context.CancelFunc, done <-chan int) {
 	cancel()
 	waitExit(t, done)
 }
+
+func TestServeLogsNoTokenOrAuthorizationValue(t *testing.T) {
+	h := newHarness(t)
+	creds := signedIn()
+	creds.ExpiresAt = time.Now().Add(time.Hour)
+	h.saveCredentials(t, creds)
+	// A 200 stream keeps the token manager away from the real token
+	// endpoint, which an upstream 401 would trigger.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\"}}\n\n")
+	}))
+	t.Cleanup(upstream.Close)
+	h.upstream = upstream.URL + "/v1"
+	h.vars["OAI_PLAN_PROXY_API_KEY"] = "secret-proxy-key"
+	addr := freeAddr(t)
+	h.vars["OAI_PLAN_PROXY_LISTEN"] = addr
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runAsync(ctx, []string{"serve"}, h.env())
+	waitForGet(t, "http://"+addr+"/healthz").Body.Close()
+
+	for _, key := range []string{"secret-proxy-key", "secret-wrong-key"} {
+		req, _ := http.NewRequest(http.MethodPost, "http://"+addr+"/v1/responses", strings.NewReader(`{"model":"gpt-5","input":"hi"}`))
+		req.Header.Set("Authorization", "Bearer "+key)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+	stopServe(t, cancel, done)
+
+	if out := h.stdout.String() + h.stderr.String(); strings.Contains(out, "secret-") {
+		t.Fatalf("serve output contains a secret:\n%s", out)
+	}
+}

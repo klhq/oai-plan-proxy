@@ -247,7 +247,23 @@ func newHarness(t *testing.T) *harness {
 	return &harness{vars: map[string]string{"OAI_PLAN_PROXY_DATA_DIR": t.TempDir()}}
 }
 
+// offline points every OAuth endpoint at a closed port, so a test that
+// forgets to set up a fake can never reach OpenAI.
+var offline = oauth.Endpoints{
+	AuthorizeURL: "http://127.0.0.1:1/authorize",
+	TokenURL:     "http://127.0.0.1:1/token",
+	Issuer:       "https://auth.example.test",
+	Resource:     "http://127.0.0.1:1/v1",
+	DiscoveryURL: "http://127.0.0.1:1/.well-known/openid-configuration",
+}
+
 func (h *harness) env() cli.Env {
+	if h.oauth.AuthorizeURL == "" {
+		h.oauth = offline
+	}
+	if h.upstream == "" {
+		h.upstream = offline.Resource
+	}
 	return cli.Env{
 		Stdout: h.out(),
 		Stderr: &h.stderr,

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -42,9 +43,170 @@ func (p *proxy) responsesHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		writeUpstreamError(w, resp)
+		return
+	}
+	if req.Stream {
+		streamEvents(w, resp.Body)
+		return
+	}
+	writeCompleted(w, resp.Body)
+}
+
+// writeCompleted answers a non-streaming caller with the response object
+// from the upstream response.completed event.
+func writeCompleted(w http.ResponseWriter, body io.Reader) {
+	events := responses.NewEventReader(body)
+	for {
+		ev, err := events.Next()
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "server_error", "upstream_incomplete",
+				"the upstream stream ended before response.completed")
+			return
+		}
+		if f, ok := failure(ev); ok {
+			writeFailure(w, f)
+			return
+		}
+		if ev.Type != "response.completed" {
+			continue
+		}
+		var done struct {
+			Response json.RawMessage `json:"response"`
+		}
+		_ = json.Unmarshal(ev.Data, &done)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(done.Response)
+		return
+	}
+}
+
+// maxErrorBody bounds how much of an upstream error answer is read.
+const maxErrorBody = 1 << 20
+
+// usageLimitCode is the error upstream sends when the plan's shared usage is
+// spent. Retrying cannot help until the limit resets.
+const usageLimitCode = "subscription_sharing_usage_limit_exceeded"
+
+// writeUpstreamError passes an upstream HTTP error through, except the usage
+// limit, which becomes a 429 that tells the caller not to retry.
+func writeUpstreamError(w http.ResponseWriter, resp *http.Response) {
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
+	var e struct {
+		Error upstreamFailure `json:"error"`
+	}
+	if json.Unmarshal(body, &e) == nil && e.Error.Code == usageLimitCode {
+		writeUsageLimit(w, e.Error.Message)
+		return
+	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	_, _ = w.Write(body)
+}
+
+// writeUsageLimit answers 429 with x-should-retry: false, so a gateway such
+// as Bifrost falls back to its next provider instead of retrying.
+func writeUsageLimit(w http.ResponseWriter, message string) {
+	if message == "" {
+		message = "the ChatGPT plan usage limit is exhausted"
+	}
+	w.Header().Set("x-should-retry", "false")
+	writeError(w, http.StatusTooManyRequests, "insufficient_quota", usageLimitCode, message)
+}
+
+// preOutput are the events upstream sends before any output. A stream is
+// held back until the first other event, so a failure up to that point can
+// still become a real HTTP error.
+var preOutput = map[string]bool{
+	"response.created":     true,
+	"response.in_progress": true,
+	"response.queued":      true,
+}
+
+// streamEvents forwards upstream events to a streaming caller, flushing
+// after each one.
+func streamEvents(w http.ResponseWriter, body io.Reader) {
+	events := responses.NewEventReader(body)
+	var held [][]byte
+	for {
+		ev, err := events.Next()
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "server_error", "upstream_incomplete",
+				"the upstream stream ended before any output")
+			return
+		}
+		if f, ok := failure(ev); ok {
+			writeFailure(w, f)
+			return
+		}
+		held = append(held, ev.Raw)
+		if !preOutput[ev.Type] {
+			break
+		}
+	}
+
+	flusher, _ := w.(http.Flusher)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	for _, raw := range held {
+		if _, err := w.Write(raw); err != nil {
+			return
+		}
+	}
+	// After the first output event the stream passes through as upstream
+	// sent it, failures included.
+	for {
+		if flusher != nil {
+			flusher.Flush()
+		}
+		ev, err := events.Next()
+		if err != nil {
+			return
+		}
+		if _, err := w.Write(ev.Raw); err != nil {
+			return
+		}
+	}
+}
+
+// upstreamFailure is an error upstream reported inside the event stream.
+type upstreamFailure struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// failure reports whether ev is a failed response or an error event and
+// extracts its error. A failed response nests the error in response.error;
+// an error event carries code and message at the top level.
+func failure(ev responses.Event) (upstreamFailure, bool) {
+	switch ev.Type {
+	case "response.failed":
+		var failed struct {
+			Response struct {
+				Error upstreamFailure `json:"error"`
+			} `json:"response"`
+		}
+		_ = json.Unmarshal(ev.Data, &failed)
+		return failed.Response.Error, true
+	case "error":
+		var e upstreamFailure
+		_ = json.Unmarshal(ev.Data, &e)
+		return e, true
+	}
+	return upstreamFailure{}, false
+}
+
+// writeFailure answers with an HTTP error for a failure upstream reported
+// before any output.
+func writeFailure(w http.ResponseWriter, f upstreamFailure) {
+	if f.Code == usageLimitCode {
+		writeUsageLimit(w, f.Message)
+		return
+	}
+	writeError(w, http.StatusBadGateway, "server_error", f.Code, f.Message)
 }

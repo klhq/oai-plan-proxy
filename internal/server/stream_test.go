@@ -1,0 +1,297 @@
+package server_test
+
+import (
+	"bufio"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+)
+
+// sse formats one server-sent event carrying data.
+func sse(data string) string {
+	return "event: " + eventType(data) + "\ndata: " + data + "\n\n"
+}
+
+// eventType pulls the "type" value out of an event payload.
+func eventType(data string) string {
+	_, rest, _ := strings.Cut(data, `"type":"`)
+	typ, _, _ := strings.Cut(rest, `"`)
+	return typ
+}
+
+const (
+	evCreated   = `{"type":"response.created","response":{"id":"resp_1","status":"in_progress"}}`
+	evDelta     = `{"type":"response.output_text.delta","item_id":"msg_1","delta":"Hel"}`
+	evDelta2    = `{"type":"response.output_text.delta","item_id":"msg_1","delta":"lo"}`
+	evCompleted = `{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}]}]}}`
+)
+
+// readEvent reads one blank-line-terminated SSE event, failing after a
+// timeout so a proxy that buffers cannot hang the test.
+func readEvent(t *testing.T, r *bufio.Reader) string {
+	t.Helper()
+	got := make(chan string, 1)
+	go func() {
+		var b strings.Builder
+		for {
+			line, err := r.ReadString('\n')
+			b.WriteString(line)
+			if err != nil || line == "\n" {
+				got <- b.String()
+				return
+			}
+		}
+	}()
+	select {
+	case ev := <-got:
+		return ev
+	case <-time.After(3 * time.Second):
+		t.Fatal("no event reached the caller within 3s; the proxy is buffering")
+		return ""
+	}
+}
+
+func TestAStreamingCallerGetsEachEventUnchangedAsItArrives(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse(evCreated)+sse(evDelta))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-time.After(5 * time.Second):
+			return
+		}
+		_, _ = io.WriteString(w, sse(evDelta2)+sse(evCompleted))
+	})
+	srv := httptest.NewServer(proxy(u, &fakeTokens{current: "access-1"}, ""))
+	t.Cleanup(srv.Close)
+
+	resp := postWithin(t, srv.URL+"/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`)
+	defer resp.Body.Close()
+	r := bufio.NewReader(resp.Body)
+
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
+		t.Fatalf("response = %d %q, want 200 text/event-stream", resp.StatusCode, resp.Header.Get("Content-Type"))
+	}
+	for _, want := range []string{evCreated, evDelta} {
+		if got := readEvent(t, r); got != sse(want) {
+			t.Fatalf("event = %q, want %q", got, sse(want))
+		}
+	}
+	close(release)
+	for _, want := range []string{evDelta2, evCompleted} {
+		if got := readEvent(t, r); got != sse(want) {
+			t.Fatalf("event = %q, want %q", got, sse(want))
+		}
+	}
+}
+
+// postWithin posts body and fails if the response headers take longer than
+// 3s, so a proxy that holds the whole stream cannot hang the test.
+func postWithin(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	type result struct {
+		resp *http.Response
+		err  error
+	}
+	got := make(chan result, 1)
+	go func() {
+		resp, err := http.Post(url, "application/json", strings.NewReader(body))
+		got <- result{resp, err}
+	}()
+	select {
+	case r := <-got:
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		return r.resp
+	case <-time.After(3 * time.Second):
+		t.Fatal("no response headers within 3s; the proxy is holding the stream")
+		return nil
+	}
+}
+
+// sseUpstream answers every request with the given events.
+func sseUpstream(t *testing.T, events ...string) *fakeUpstream {
+	t.Helper()
+	return newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range events {
+			_, _ = io.WriteString(w, sse(ev))
+		}
+	})
+}
+
+func TestANonStreamingCallerGetsTheCompletedResponseObject(t *testing.T) {
+	u := sseUpstream(t, evCreated, evDelta, evDelta2, evCompleted)
+	h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+	rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi"}`)
+
+	want := `{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}]}]}`
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("response = %d %q, want 200 with the completed response object", rec.Code, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Fatalf("Content-Type = %q, want application/json", ct)
+	}
+}
+
+func TestANonStreamingCallerGetsA502WhenTheStreamEndsWithoutCompleting(t *testing.T) {
+	u := sseUpstream(t, evCreated, evDelta)
+	h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+	rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi"}`)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d %q, want 502", rec.Code, rec.Body.String())
+	}
+	openAIError(t, rec)
+}
+
+const evFailed = `{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"server_error","message":"The model failed."}}}`
+
+func TestAFailureBeforeAnyOutputIsARealHTTPError(t *testing.T) {
+	for _, body := range []string{
+		`{"model":"gpt-5","input":"hi","stream":true}`,
+		`{"model":"gpt-5","input":"hi"}`,
+	} {
+		u := sseUpstream(t, evCreated, evFailed)
+		h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+		rec := post(t, h, "/v1/responses", body)
+
+		if rec.Code != http.StatusBadGateway {
+			t.Errorf("%s: status = %d %q, want 502 instead of a 200 stream", body, rec.Code, rec.Body.String())
+			continue
+		}
+		if msg, _, code := openAIError(t, rec); code != "server_error" || msg != "The model failed." {
+			t.Errorf("%s: error = %q %q, want upstream's server_error and message", body, code, msg)
+		}
+	}
+}
+
+func TestAStreamThatEndsBeforeAnyOutputIsA502(t *testing.T) {
+	u := sseUpstream(t, evCreated)
+	h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+	rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d %q, want 502", rec.Code, rec.Body.String())
+	}
+	openAIError(t, rec)
+}
+
+const usageLimit = "subscription_sharing_usage_limit_exceeded"
+
+// assertUsageLimit checks the answer Bifrost needs to fall back: a 429 that
+// says not to retry.
+func assertUsageLimit(t *testing.T, rec *httptest.ResponseRecorder) {
+	t.Helper()
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d %q, want 429", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("x-should-retry"); got != "false" {
+		t.Fatalf("x-should-retry = %q, want false", got)
+	}
+	if _, _, code := openAIError(t, rec); code != usageLimit {
+		t.Fatalf("code = %q, want %s", code, usageLimit)
+	}
+}
+
+func TestTheUsageLimitAsAnHTTPErrorIsANoRetry429(t *testing.T) {
+	for _, status := range []int{http.StatusTooManyRequests, http.StatusForbidden} {
+		u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = io.WriteString(w, `{"error":{"type":"usage_limit","code":"`+usageLimit+`","message":"Plan usage limit reached."}}`)
+		})
+		h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+		rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`)
+
+		assertUsageLimit(t, rec)
+	}
+}
+
+func TestTheUsageLimitAsAFailedEventBeforeOutputIsANoRetry429(t *testing.T) {
+	failed := `{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"` + usageLimit + `","message":"Plan usage limit reached."}}}`
+	for _, body := range []string{
+		`{"model":"gpt-5","input":"hi","stream":true}`,
+		`{"model":"gpt-5","input":"hi"}`,
+	} {
+		u := sseUpstream(t, evCreated, failed)
+		h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+		rec := post(t, h, "/v1/responses", body)
+
+		assertUsageLimit(t, rec)
+	}
+}
+
+func TestAnErrorEventBeforeOutputIsARealHTTPError(t *testing.T) {
+	cases := []struct {
+		event string
+		check func(*testing.T, *httptest.ResponseRecorder)
+	}{
+		{`{"type":"error","code":"` + usageLimit + `","message":"Plan usage limit reached."}`, assertUsageLimit},
+		{`{"type":"error","code":"server_error","message":"Upstream broke."}`, func(t *testing.T, rec *httptest.ResponseRecorder) {
+			if rec.Code != http.StatusBadGateway {
+				t.Fatalf("status = %d %q, want 502", rec.Code, rec.Body.String())
+			}
+			if msg, _, _ := openAIError(t, rec); msg != "Upstream broke." {
+				t.Fatalf("message = %q, want upstream's", msg)
+			}
+		}},
+	}
+	for _, c := range cases {
+		u := sseUpstream(t, evCreated, c.event)
+		h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+		rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`)
+
+		c.check(t, rec)
+	}
+}
+
+func TestOtherUpstreamHTTPErrorsPassThroughUnchanged(t *testing.T) {
+	const errBody = `{"error":{"type":"invalid_request_error","code":"model_not_found","message":"No such model."}}`
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, errBody)
+	})
+	h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+	rec := post(t, h, "/v1/responses", `{"model":"nope","input":"hi","stream":true}`)
+
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != errBody {
+		t.Fatalf("response = %d %q, want upstream's 400 and body", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("x-should-retry") != "" {
+		t.Fatal("x-should-retry was set on an ordinary error")
+	}
+}
+
+func TestAFailureAfterOutputStartedPassesThroughTheStream(t *testing.T) {
+	u := sseUpstream(t, evCreated, evDelta, evFailed)
+	h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+	rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`)
+
+	if want := sse(evCreated) + sse(evDelta) + sse(evFailed); rec.Code != http.StatusOK || rec.Body.String() != want {
+		t.Fatalf("response = %d %q, want 200 with the stream as upstream sent it", rec.Code, rec.Body.String())
+	}
+}

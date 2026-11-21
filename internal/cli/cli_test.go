@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/klhq/oai-plan-proxy/internal/cli"
+	"github.com/klhq/oai-plan-proxy/internal/store"
 )
 
 // freeAddr returns a loopback address that was free a moment ago.
@@ -75,15 +76,70 @@ func TestUnknownCommandPrintsUsageAndExits2(t *testing.T) {
 	}
 }
 
-func TestServeAnswersHealthzWithoutLoginAndStopsOnCancel(t *testing.T) {
+func (h *harness) saveCredentials(t *testing.T, c store.Credentials) {
+	t.Helper()
+	s, err := store.Open(h.vars["OAI_PLAN_PROXY_DATA_DIR"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(c); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func signedIn() store.Credentials {
+	return store.Credentials{
+		ClientID:     "oaiapp_test",
+		AccessToken:  "secret-access-token",
+		RefreshToken: "secret-refresh-token",
+		IDToken:      "secret-id-token",
+		ExpiresAt:    time.Date(2026, 11, 21, 13, 0, 0, 0, time.UTC),
+		Email:        "user@example.com",
+	}
+}
+
+func TestStatusPrintsTheSignInWithoutTokens(t *testing.T) {
 	h := newHarness(t)
+	h.saveCredentials(t, signedIn())
+
+	code := cli.Run(context.Background(), []string{"status"}, h.env())
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, h.stderr.String())
+	}
+	out := h.stdout.String()
+	for _, want := range []string{"valid", "user@example.com", "oaiapp_test", "2026-11-21T13:00:00Z"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out+h.stderr.String(), "secret-") {
+		t.Errorf("status printed a token:\n%s", out)
+	}
+}
+
+func TestStatusWithoutSignInPointsToLogin(t *testing.T) {
+	h := newHarness(t)
+
+	code := cli.Run(context.Background(), []string{"status"}, h.env())
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr: %s", code, h.stderr.String())
+	}
+	out := h.stdout.String()
+	if !strings.Contains(out, "missing") || !strings.Contains(out, "oai-plan-proxy login") {
+		t.Fatalf("stdout = %q, want the missing state and a login hint", out)
+	}
+}
+
+// serveAndProbe runs serve, reads GET /healthz once, stops the server, and
+// returns the health response with serve's exit code.
+func serveAndProbe(t *testing.T, h *harness) (status int, body map[string]string, code int) {
+	t.Helper()
 	addr := freeAddr(t)
 	h.vars["OAI_PLAN_PROXY_LISTEN"] = addr
 	ctx, cancel := context.WithCancel(context.Background())
-	var (
-		wg   sync.WaitGroup
-		code int
-	)
+	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -91,16 +147,33 @@ func TestServeAnswersHealthzWithoutLoginAndStopsOnCancel(t *testing.T) {
 	}()
 
 	resp := waitForGet(t, "http://"+addr+"/healthz")
-	var body map[string]string
 	_ = json.NewDecoder(resp.Body).Decode(&body)
 	resp.Body.Close()
 	cancel()
 	wg.Wait()
+	return resp.StatusCode, body, code
+}
 
-	if resp.StatusCode != http.StatusServiceUnavailable || body["login"] != "missing" {
-		t.Fatalf("healthz = %d %v, want 503 with login missing", resp.StatusCode, body)
+func TestServeAnswersHealthzWithoutLoginAndStopsOnCancel(t *testing.T) {
+	h := newHarness(t)
+
+	status, body, code := serveAndProbe(t, h)
+
+	if status != http.StatusServiceUnavailable || body["login"] != "missing" {
+		t.Fatalf("healthz = %d %v, want 503 with login missing", status, body)
 	}
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr: %s", code, h.stderr.String())
+	}
+}
+
+func TestServeReportsAStoredSignInAsHealthy(t *testing.T) {
+	h := newHarness(t)
+	h.saveCredentials(t, signedIn())
+
+	status, body, _ := serveAndProbe(t, h)
+
+	if status != http.StatusOK || body["login"] != "valid" {
+		t.Fatalf("healthz = %d %v, want 200 with login valid", status, body)
 	}
 }

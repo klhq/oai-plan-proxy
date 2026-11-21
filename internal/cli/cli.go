@@ -13,6 +13,7 @@ import (
 	"github.com/klhq/oai-plan-proxy/internal/auth"
 	"github.com/klhq/oai-plan-proxy/internal/config"
 	"github.com/klhq/oai-plan-proxy/internal/server"
+	"github.com/klhq/oai-plan-proxy/internal/store"
 )
 
 // Env carries the process environment so tests can replace it.
@@ -27,6 +28,7 @@ const usage = `usage: oai-plan-proxy <command> [flags]
 
 commands:
   serve    run the HTTP proxy
+  status   show the stored sign-in
 `
 
 // shutdownTimeout bounds how long serve waits for in-flight requests.
@@ -41,19 +43,52 @@ func Run(ctx context.Context, args []string, env Env) int {
 	switch args[0] {
 	case "serve":
 		return runServe(ctx, env)
+	case "status":
+		return runStatus(env)
 	default:
 		fmt.Fprintf(env.Stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2
 	}
 }
 
-// noLogin reports a missing sign-in until the credential store exists.
-type noLogin struct{}
+func openStore(env Env) (*store.Store, error) {
+	cfg, err := config.Load(env.Getenv, env.UserConfigDir)
+	if err != nil {
+		return nil, err
+	}
+	return store.Open(cfg.DataDir)
+}
 
-func (noLogin) State() auth.State { return auth.StateMissing }
+// runStatus prints the stored sign-in. It never prints a token.
+func runStatus(env Env) int {
+	st, err := openStore(env)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	c, err := st.Load()
+	if errors.Is(err, store.ErrNoCredentials) {
+		fmt.Fprintf(env.Stdout, "login:     %s\nrun `oai-plan-proxy login` to sign in\n", auth.StateMissing)
+		return 0
+	}
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	fmt.Fprintf(env.Stdout, "login:     %s\n", st.State())
+	fmt.Fprintf(env.Stdout, "account:   %s\n", c.Email)
+	fmt.Fprintf(env.Stdout, "client id: %s\n", c.ClientID)
+	fmt.Fprintf(env.Stdout, "expires:   %s\n", c.ExpiresAt.UTC().Format(time.RFC3339))
+	return 0
+}
 
 func runServe(ctx context.Context, env Env) int {
 	cfg, err := config.Load(env.Getenv, env.UserConfigDir)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
@@ -64,7 +99,7 @@ func runServe(ctx context.Context, env Env) int {
 		return 1
 	}
 	srv := &http.Server{
-		Handler:           server.New(server.Options{Login: noLogin{}}),
+		Handler:           server.New(server.Options{Login: st}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	fmt.Fprintf(env.Stderr, "listening on %s\n", ln.Addr())

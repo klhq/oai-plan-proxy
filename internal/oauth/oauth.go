@@ -32,6 +32,9 @@ type Endpoints struct {
 	TokenURL     string
 	Issuer       string
 	Resource     string
+	// DiscoveryURL is the OpenID Connect discovery document. Logout reads
+	// the revocation endpoint from it.
+	DiscoveryURL string
 }
 
 // OpenAI holds the production endpoints from the Sign in with ChatGPT docs.
@@ -42,6 +45,7 @@ var OpenAI = Endpoints{
 	TokenURL:     "https://auth.openai.com/api/accounts/oauth/token",
 	Issuer:       "https://auth.openai.com",
 	Resource:     "https://api.openai.com/v1",
+	DiscoveryURL: "https://auth.openai.com/.well-known/openid-configuration",
 }
 
 // Params describes one sign-in attempt.

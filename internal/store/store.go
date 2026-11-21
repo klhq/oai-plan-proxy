@@ -187,3 +187,13 @@ func writeTemp(dir, name string, data []byte) (string, error) {
 	}
 	return path, nil
 }
+
+// Delete removes the stored credentials. The host id stays, because OpenAI
+// expects one ext_agent_host_id for the life of the host.
+func (s *Store) Delete() error {
+	err := os.Remove(filepath.Join(s.dir, credentialsFile))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("delete credentials: %w", err)
+	}
+	return syncDir(s.dir)
+}

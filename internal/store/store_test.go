@@ -247,3 +247,25 @@ func TestOpenTightensAnExistingWideDirectory(t *testing.T) {
 		t.Fatalf("data dir mode = %o, want 700", perm)
 	}
 }
+
+func TestDeleteRemovesCredentialsButKeepsTheHostID(t *testing.T) {
+	s, _ := openStore(t)
+	hostID, err := s.HostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Save(sampleCredentials()); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.Delete(); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+
+	if _, err := s.Load(); !errors.Is(err, store.ErrNoCredentials) {
+		t.Fatalf("Load after Delete = %v, want ErrNoCredentials", err)
+	}
+	if got, _ := s.HostID(); got != hostID {
+		t.Fatalf("host id = %q after Delete, want the original %q", got, hostID)
+	}
+}

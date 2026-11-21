@@ -3,12 +3,14 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/klhq/oai-plan-proxy/internal/auth"
@@ -37,6 +39,9 @@ commands:
   login    sign in with ChatGPT through a browser
   serve    run the HTTP proxy
   status   show the stored sign-in
+  logout   revoke the sign-in and delete the stored credentials
+  export   write the stored credentials to a file: export <file>
+  import   install exported credentials: import [--force] <file>
 `
 
 // shutdownTimeout bounds how long serve waits for in-flight requests.
@@ -55,6 +60,12 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return runStatus(env)
 	case "login":
 		return runLogin(ctx, args[1:], env)
+	case "logout":
+		return runLogout(ctx, env)
+	case "export":
+		return runExport(args[1:], env)
+	case "import":
+		return runImport(ctx, args[1:], env)
 	default:
 		fmt.Fprintf(env.Stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2
@@ -140,6 +151,138 @@ func runLogin(ctx context.Context, args []string, env Env) int {
 		return 1
 	}
 	fmt.Fprintf(env.Stdout, "Signed in as %s (client %s).\n", res.Email, res.ClientID)
+	return 0
+}
+
+// runLogout revokes the refresh token and deletes the stored credentials.
+// The host id stays.
+func runLogout(ctx context.Context, env Env) int {
+	st, err := openStore(env)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	// The lock keeps a running serve from rotating the refresh token while
+	// it is being revoked.
+	unlock, err := st.Lock(ctx)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	defer unlock()
+	c, err := st.Load()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	// A dead sign-in has no refresh token left to revoke.
+	if c.RefreshToken != "" {
+		if err := oauth.Revoke(ctx, env.httpClient(), env.endpoints(), c.ClientID, c.RefreshToken); err != nil {
+			fmt.Fprintf(env.Stderr, "%v\nthe credentials were kept; run logout again\n", err)
+			return 1
+		}
+	}
+	if err := st.Delete(); err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	fmt.Fprintln(env.Stdout, "Signed out.")
+	return 0
+}
+
+// runExport writes the stored credentials to a file another host can import.
+func runExport(args []string, env Env) int {
+	if len(args) != 1 {
+		fmt.Fprintln(env.Stderr, "usage: oai-plan-proxy export <file>")
+		return 2
+	}
+	st, err := openStore(env)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	c, err := st.Load()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	if err := writePrivateJSON(args[0], c); err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	fmt.Fprintf(env.Stdout, "Exported the sign-in to %s. It holds live tokens: move it over SSH and delete it after import.\n", args[0])
+	return 0
+}
+
+// writePrivateJSON writes v to path readable by the owner only. Chmod covers
+// a file that already existed with wider permissions.
+func writePrivateJSON(path string, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode credentials: %w", err)
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return fmt.Errorf("create export file: %w", err)
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return fmt.Errorf("restrict export file: %w", err)
+	}
+	if _, err := f.Write(append(b, '\n')); err != nil {
+		f.Close()
+		return fmt.Errorf("write export file: %w", err)
+	}
+	return f.Close()
+}
+
+// runImport installs credentials exported on another host.
+func runImport(ctx context.Context, args []string, env Env) int {
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	fs.SetOutput(env.Stderr)
+	force := fs.Bool("force", false, "replace credentials that are already stored")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(env.Stderr, "usage: oai-plan-proxy import [--force] <file>")
+		return 2
+	}
+	file := fs.Arg(0)
+	b, err := os.ReadFile(file)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	var c store.Credentials
+	if err := json.Unmarshal(b, &c); err != nil {
+		fmt.Fprintf(env.Stderr, "parse %s: %v\n", file, err)
+		return 1
+	}
+	if c.ClientID == "" || c.RefreshToken == "" {
+		fmt.Fprintf(env.Stderr, "%s holds no usable sign-in; create it with `oai-plan-proxy export`\n", file)
+		return 1
+	}
+	st, err := openStore(env)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	unlock, err := st.Lock(ctx)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	defer unlock()
+	if _, err := st.Load(); !*force && !errors.Is(err, store.ErrNoCredentials) {
+		fmt.Fprintln(env.Stderr, "credentials are already stored; pass --force to replace them")
+		return 1
+	}
+	if err := st.Save(c); err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	fmt.Fprintf(env.Stdout, "Imported the sign-in for %s (client %s).\n", c.Email, c.ClientID)
 	return 0
 }
 

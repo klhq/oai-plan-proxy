@@ -357,6 +357,31 @@ func serveAndProbe(t *testing.T, h *harness) (status int, body map[string]string
 	return resp.StatusCode, body, code
 }
 
+func TestServeRefreshesANearlyExpiredSignInWithoutTraffic(t *testing.T) {
+	h := newHarness(t)
+	h.fakeAuth(t)
+	creds := signedIn()
+	creds.ExpiresAt = time.Now().Add(30 * time.Second)
+	h.saveCredentials(t, creds)
+	h.vars["OAI_PLAN_PROXY_LISTEN"] = freeAddr(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runAsync(ctx, []string{"serve"}, h.env())
+	defer func() { cancel(); waitExit(t, done) }()
+
+	st, _ := store.Open(h.vars["OAI_PLAN_PROXY_DATA_DIR"])
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		c, err := st.Load()
+		if err == nil && c.RefreshToken == "refresh-1" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("serve never refreshed the sign-in; stored refresh token is still %q", c.RefreshToken)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestServeAnswersHealthzWithoutLoginAndStopsOnCancel(t *testing.T) {
 	h := newHarness(t)
 

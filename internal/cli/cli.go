@@ -16,6 +16,7 @@ import (
 	"github.com/klhq/oai-plan-proxy/internal/oauth"
 	"github.com/klhq/oai-plan-proxy/internal/server"
 	"github.com/klhq/oai-plan-proxy/internal/store"
+	"github.com/klhq/oai-plan-proxy/internal/tokens"
 )
 
 // Env carries the process environment so tests can replace it.
@@ -176,6 +177,11 @@ func runServe(ctx context.Context, env Env) int {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
 	}
+	mgr := tokens.New(tokens.Options{Store: st, Client: env.httpClient(), Endpoints: env.endpoints()})
+	refreshCtx, stopRefresh := context.WithCancel(ctx)
+	defer stopRefresh()
+	go mgr.Run(refreshCtx)
+
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		fmt.Fprintf(env.Stderr, "listen on %s: %v\n", cfg.Listen, err)

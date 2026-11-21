@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // maxTokenResponse bounds how much of a token endpoint response is read.
@@ -41,6 +43,39 @@ type tokenResponse struct {
 	TokenType    string `json:"token_type"`
 	ExpiresIn    int64  `json:"expires_in"`
 	Scope        string `json:"scope"`
+}
+
+// Refreshed is the result of a refresh grant.
+type Refreshed struct {
+	AccessToken  string
+	RefreshToken string
+	IDToken      string
+	ExpiresAt    time.Time
+}
+
+// Refresh trades a refresh token for new tokens. The refresh token rotates:
+// the caller must persist Refreshed.RefreshToken before using the access
+// token, because the old refresh token is now spent.
+func Refresh(ctx context.Context, client *http.Client, ep Endpoints, clientID, refreshToken string, now time.Time) (Refreshed, error) {
+	// No scope parameter: the docs say omitting it keeps the original grant.
+	tok, err := postToken(ctx, client, ep.TokenURL, url.Values{
+		"grant_type":    {"refresh_token"},
+		"client_id":     {clientID},
+		"refresh_token": {refreshToken},
+		"resource":      {ep.Resource},
+	})
+	if err != nil {
+		return Refreshed{}, err
+	}
+	if tok.AccessToken == "" || tok.RefreshToken == "" {
+		return Refreshed{}, errors.New("refresh answer lacks an access_token or refresh_token")
+	}
+	return Refreshed{
+		AccessToken:  tok.AccessToken,
+		RefreshToken: tok.RefreshToken,
+		IDToken:      tok.IDToken,
+		ExpiresAt:    now.Add(time.Duration(tok.ExpiresIn) * time.Second),
+	}, nil
 }
 
 // postToken sends a form-encoded grant to the token endpoint.

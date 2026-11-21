@@ -1,0 +1,10 @@
+# Build output
+/bin/
+/dist/
+
+# Local credentials from manual runs
+/.data/
+*.credentials.json
+
+# Internal planning docs, never published
+docs/sdd/

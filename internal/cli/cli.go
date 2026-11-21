@@ -4,6 +4,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/klhq/oai-plan-proxy/internal/auth"
 	"github.com/klhq/oai-plan-proxy/internal/config"
+	"github.com/klhq/oai-plan-proxy/internal/oauth"
 	"github.com/klhq/oai-plan-proxy/internal/server"
 	"github.com/klhq/oai-plan-proxy/internal/store"
 )
@@ -22,11 +24,16 @@ type Env struct {
 	Stderr        io.Writer
 	Getenv        func(string) string
 	UserConfigDir func() (string, error)
+	// OAuth overrides the OpenAI endpoints. Tests point it at fakes.
+	OAuth oauth.Endpoints
+	// HTTPClient is used for OAuth requests. Nil means a default client.
+	HTTPClient *http.Client
 }
 
 const usage = `usage: oai-plan-proxy <command> [flags]
 
 commands:
+  login    sign in with ChatGPT through a browser
   serve    run the HTTP proxy
   status   show the stored sign-in
 `
@@ -45,6 +52,8 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return runServe(ctx, env)
 	case "status":
 		return runStatus(env)
+	case "login":
+		return runLogin(ctx, args[1:], env)
 	default:
 		fmt.Fprintf(env.Stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2
@@ -57,6 +66,80 @@ func openStore(env Env) (*store.Store, error) {
 		return nil, err
 	}
 	return store.Open(cfg.DataDir)
+}
+
+// agentName is the agent_name_hint shown on the consent screen.
+const agentName = "oai-plan-proxy"
+
+func (env Env) endpoints() oauth.Endpoints {
+	if env.OAuth.AuthorizeURL != "" {
+		return env.OAuth
+	}
+	return oauth.OpenAI
+}
+
+func (env Env) httpClient() *http.Client {
+	if env.HTTPClient != nil {
+		return env.HTTPClient
+	}
+	return &http.Client{Timeout: 30 * time.Second}
+}
+
+// runLogin signs in through the browser and stores the result.
+func runLogin(ctx context.Context, args []string, env Env) int {
+	fs := flag.NewFlagSet("login", flag.ContinueOnError)
+	fs.SetOutput(env.Stderr)
+	port := fs.Int("port", 1455, "loopback callback port")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+	st, err := openStore(env)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	hostID, err := st.HostID()
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	// A stored client ID, even from a dead sign-in, makes this a returning
+	// sign-in instead of a new registration.
+	var clientID string
+	if prev, err := st.Load(); err == nil {
+		clientID = prev.ClientID
+	}
+
+	res, err := oauth.Login(ctx, oauth.LoginOptions{
+		Endpoints: env.endpoints(),
+		Params:    oauth.Params{ClientID: clientID, HostID: hostID, AgentName: agentName, Port: *port},
+		Out:       env.Stdout,
+		Client:    env.httpClient(),
+	})
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+
+	unlock, err := st.Lock(ctx)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	defer unlock()
+	if err := st.Save(store.Credentials{
+		ClientID:     res.ClientID,
+		AccessToken:  res.AccessToken,
+		RefreshToken: res.RefreshToken,
+		IDToken:      res.IDToken,
+		ExpiresAt:    res.ExpiresAt,
+		Email:        res.Email,
+	}); err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	fmt.Fprintf(env.Stdout, "Signed in as %s (client %s).\n", res.Email, res.ClientID)
+	return 0
 }
 
 // runStatus prints the stored sign-in. It never prints a token.

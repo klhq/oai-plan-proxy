@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/klhq/oai-plan-proxy/internal/auth"
+	"github.com/klhq/oai-plan-proxy/internal/oauth"
 )
 
 const (
@@ -22,10 +23,6 @@ const (
 	hostIDFile      = "host_id"
 	credentialsFile = "credentials.json"
 )
-
-// DynamicClientID is the placeholder client_id for a first sign-in. The
-// authorization server answers with an issued client ID that replaces it.
-const DynamicClientID = "dynamic_agent_client"
 
 // ErrNoCredentials means no sign-in has been stored.
 var ErrNoCredentials = errors.New("no stored credentials")
@@ -74,8 +71,8 @@ func (s *Store) State() auth.State {
 // renames it over credentials.json, so a crash leaves either the old file or
 // the new one, never a partial write.
 func (s *Store) Save(c Credentials) error {
-	if c.ClientID == DynamicClientID {
-		return fmt.Errorf("refusing to store %q as the client ID: save the issued client ID instead", DynamicClientID)
+	if c.ClientID == oauth.DynamicClientID {
+		return fmt.Errorf("refusing to store %q as the client ID: save the issued client ID instead", oauth.DynamicClientID)
 	}
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {

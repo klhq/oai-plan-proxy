@@ -1,0 +1,52 @@
+package config_test
+
+import (
+	"path/filepath"
+	"testing"
+
+	"github.com/klhq/oai-plan-proxy/internal/config"
+)
+
+func env(vars map[string]string) func(string) string {
+	return func(key string) string { return vars[key] }
+}
+
+func TestLoadUsesDefaultsWhenNothingIsSet(t *testing.T) {
+	userConfigDir := t.TempDir()
+
+	cfg, err := config.Load(env(nil), func() (string, error) { return userConfigDir, nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if cfg.Listen != "127.0.0.1:18080" {
+		t.Errorf("Listen = %q, want 127.0.0.1:18080", cfg.Listen)
+	}
+	if want := filepath.Join(userConfigDir, "oai-plan-proxy"); cfg.DataDir != want {
+		t.Errorf("DataDir = %q, want %q", cfg.DataDir, want)
+	}
+	if cfg.APIKey != "" {
+		t.Errorf("APIKey = %q, want empty", cfg.APIKey)
+	}
+}
+
+func TestLoadReadsEnvironmentOverrides(t *testing.T) {
+	failIfCalled := func() (string, error) {
+		t.Fatal("user config dir must not be consulted when OAI_PLAN_PROXY_DATA_DIR is set")
+		return "", nil
+	}
+
+	cfg, err := config.Load(env(map[string]string{
+		"OAI_PLAN_PROXY_LISTEN":   "0.0.0.0:9000",
+		"OAI_PLAN_PROXY_DATA_DIR": "/srv/proxy",
+		"OAI_PLAN_PROXY_API_KEY":  "incoming-key",
+	}), failIfCalled)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := config.Config{Listen: "0.0.0.0:9000", DataDir: "/srv/proxy", APIKey: "incoming-key"}
+	if cfg != want {
+		t.Fatalf("cfg = %+v, want %+v", cfg, want)
+	}
+}

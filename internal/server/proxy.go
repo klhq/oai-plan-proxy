@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"errors"
@@ -19,7 +20,7 @@ type proxy struct {
 // forward sends a bodiless request to Upstream+path and copies the answer
 // back.
 func (p *proxy) forward(w http.ResponseWriter, r *http.Request, path string) {
-	resp, err := p.send(r.Context(), r.Method, path)
+	resp, err := p.send(r.Context(), r.Method, path, nil)
 	if err != nil {
 		writeSendError(w, err)
 		return
@@ -32,14 +33,15 @@ func (p *proxy) forward(w http.ResponseWriter, r *http.Request, path string) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// send makes an upstream request with the OAuth access token. After an
-// upstream 401 it refreshes the rejected token and retries once.
-func (p *proxy) send(ctx context.Context, method, path string) (*http.Response, error) {
+// send makes an upstream request with the OAuth access token. A non-nil
+// body is sent as JSON. After an upstream 401 it refreshes the rejected
+// token and retries once.
+func (p *proxy) send(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
 	tok, err := p.opts.Tokens.AccessToken(ctx)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := p.do(ctx, method, path, tok)
+	resp, err := p.do(ctx, method, path, body, tok)
 	if err != nil || resp.StatusCode != http.StatusUnauthorized {
 		return resp, err
 	}
@@ -48,15 +50,22 @@ func (p *proxy) send(ctx context.Context, method, path string) (*http.Response, 
 	if err != nil {
 		return nil, err
 	}
-	return p.do(ctx, method, path, tok)
+	return p.do(ctx, method, path, body, tok)
 }
 
-func (p *proxy) do(ctx context.Context, method, path, tok string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(ctx, method, p.opts.Upstream+path, nil)
+func (p *proxy) do(ctx context.Context, method, path string, body []byte, tok string) (*http.Response, error) {
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, p.opts.Upstream+path, rd)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	return p.opts.Client.Do(req)
 }
 

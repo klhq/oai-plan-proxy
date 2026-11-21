@@ -34,6 +34,9 @@ type Options struct {
 	Client *http.Client
 	// APIKey, when set, is the bearer value every /v1 request must carry.
 	APIKey string
+	// Strict rejects preview-limited parameters with 400 instead of
+	// dropping them.
+	Strict bool
 }
 
 // New returns the proxy's HTTP handler.
@@ -57,6 +60,7 @@ func New(opts Options) http.Handler {
 	mux.Handle("GET /v1/models/{id}", p.v1(func(w http.ResponseWriter, r *http.Request) {
 		p.forward(w, r, "/models/"+url.PathEscape(r.PathValue("id")))
 	}))
+	mux.Handle("POST /v1/responses", p.v1(p.responsesHandler))
 	mux.Handle("/v1/", p.keyed(notFound))
 	return mux
 }

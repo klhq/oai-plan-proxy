@@ -39,7 +39,7 @@ const usage = `usage: oai-plan-proxy <command> [flags]
 
 commands:
   login    sign in with ChatGPT through a browser
-  serve    run the HTTP proxy
+  serve    run the HTTP proxy: serve [--strict]
   status   show the stored sign-in
   logout   revoke the sign-in and delete the stored credentials
   export   write the stored credentials to a file: export <file>
@@ -57,7 +57,7 @@ func Run(ctx context.Context, args []string, env Env) int {
 	}
 	switch args[0] {
 	case "serve":
-		return runServe(ctx, env)
+		return runServe(ctx, args[1:], env)
 	case "status":
 		return runStatus(env)
 	case "login":
@@ -318,7 +318,13 @@ func runStatus(env Env) int {
 	return 0
 }
 
-func runServe(ctx context.Context, env Env) int {
+func runServe(ctx context.Context, args []string, env Env) int {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	fs.SetOutput(env.Stderr)
+	strict := fs.Bool("strict", false, "reject preview-limited parameters with 400 instead of dropping them")
+	if err := fs.Parse(args); err != nil {
+		return 2
+	}
 	cfg, err := config.Load(env.Getenv, env.UserConfigDir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
@@ -348,6 +354,7 @@ func runServe(ctx context.Context, env Env) int {
 			// caller's context still cancels a stalled request.
 			Client: &http.Client{Transport: env.httpClient().Transport},
 			APIKey: cfg.APIKey,
+			Strict: *strict,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

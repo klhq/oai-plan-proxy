@@ -219,6 +219,7 @@ type harness struct {
 	vars           map[string]string
 	oauth          oauth.Endpoints
 	client         *http.Client
+	upstream       string
 	// stdoutTap also receives stdout, so a test can read it while a command
 	// is still running.
 	stdoutTap io.Writer
@@ -256,6 +257,7 @@ func (h *harness) env() cli.Env {
 		},
 		OAuth:      h.oauth,
 		HTTPClient: h.client,
+		Upstream:   h.upstream,
 	}
 }
 

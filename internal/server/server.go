@@ -2,8 +2,10 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 
 	"github.com/klhq/oai-plan-proxy/internal/auth"
 )
@@ -13,9 +15,25 @@ type LoginReporter interface {
 	State() auth.State
 }
 
+// TokenSource hands out OAuth access tokens for upstream requests.
+type TokenSource interface {
+	AccessToken(ctx context.Context) (string, error)
+	// RefreshRejected handles an upstream 401 for the token rejected and
+	// returns the token to retry with.
+	RefreshRejected(ctx context.Context, rejected string) (string, error)
+}
+
 // Options configures the HTTP handler.
 type Options struct {
-	Login LoginReporter
+	Login  LoginReporter
+	Tokens TokenSource
+	// Upstream is the API base URL, such as https://api.openai.com/v1.
+	Upstream string
+	// Client sends upstream requests. It must not set an overall timeout,
+	// because response streams run for minutes.
+	Client *http.Client
+	// APIKey, when set, is the bearer value every /v1 request must carry.
+	APIKey string
 }
 
 // New returns the proxy's HTTP handler.
@@ -32,6 +50,14 @@ func New(opts Options) http.Handler {
 			"login":  string(state),
 		})
 	})
+	p := &proxy{opts: opts}
+	mux.Handle("GET /v1/models", p.v1(func(w http.ResponseWriter, r *http.Request) {
+		p.forward(w, r, "/models")
+	}))
+	mux.Handle("GET /v1/models/{id}", p.v1(func(w http.ResponseWriter, r *http.Request) {
+		p.forward(w, r, "/models/"+url.PathEscape(r.PathValue("id")))
+	}))
+	mux.Handle("/v1/", p.keyed(notFound))
 	return mux
 }
 

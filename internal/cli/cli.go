@@ -31,6 +31,8 @@ type Env struct {
 	OAuth oauth.Endpoints
 	// HTTPClient is used for OAuth requests. Nil means a default client.
 	HTTPClient *http.Client
+	// Upstream overrides the API base URL. Tests point it at a fake.
+	Upstream string
 }
 
 const usage = `usage: oai-plan-proxy <command> [flags]
@@ -95,6 +97,13 @@ func (env Env) httpClient() *http.Client {
 		return env.HTTPClient
 	}
 	return &http.Client{Timeout: 30 * time.Second}
+}
+
+func (env Env) upstream() string {
+	if env.Upstream != "" {
+		return env.Upstream
+	}
+	return oauth.OpenAI.Resource
 }
 
 // runLogin signs in through the browser and stores the result.
@@ -331,7 +340,15 @@ func runServe(ctx context.Context, env Env) int {
 		return 1
 	}
 	srv := &http.Server{
-		Handler:           server.New(server.Options{Login: st}),
+		Handler: server.New(server.Options{
+			Login:    st,
+			Tokens:   mgr,
+			Upstream: env.upstream(),
+			// No overall timeout: response streams run for minutes. The
+			// caller's context still cancels a stalled request.
+			Client: &http.Client{Transport: env.httpClient().Transport},
+			APIKey: cfg.APIKey,
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	fmt.Fprintf(env.Stderr, "listening on %s\n", ln.Addr())

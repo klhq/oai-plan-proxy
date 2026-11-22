@@ -104,7 +104,7 @@ func stopServe(t *testing.T, cancel context.CancelFunc, done <-chan int) {
 	waitExit(t, done)
 }
 
-func TestServeLogsNoTokenOrAuthorizationValue(t *testing.T) {
+func TestServeLogsNoTokenAuthorizationValueOrEmail(t *testing.T) {
 	h := newHarness(t)
 	creds := signedIn()
 	creds.ExpiresAt = time.Now().Add(time.Hour)
@@ -136,7 +136,10 @@ func TestServeLogsNoTokenOrAuthorizationValue(t *testing.T) {
 	}
 	stopServe(t, cancel, done)
 
-	if out := h.stdout.String() + h.stderr.String(); strings.Contains(out, "secret-") {
-		t.Fatalf("serve output contains a secret:\n%s", out)
+	out := h.stdout.String() + h.stderr.String()
+	for _, private := range []string{"secret-", "user@example.com"} {
+		if strings.Contains(out, private) {
+			t.Fatalf("serve output contains %q:\n%s", private, out)
+		}
 	}
 }

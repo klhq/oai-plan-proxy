@@ -78,6 +78,51 @@ rm creds.json
 delete every copy after the import. `import` refuses to replace stored
 credentials unless you pass `--force`. Each host keeps its own `host_id`.
 
+## Container
+
+The image is distroless and runs as a non-root user. It keeps its data in
+the `/data` volume, listens on `0.0.0.0:18080`, and runs `serve` unless you
+pass another command.
+
+```bash
+docker volume create oai-plan-proxy-data
+```
+
+Sign in once, by either path:
+
+**SSH tunnel.** On a Linux host, forward the callback port from your laptop,
+then run `login` in a one-off container on the host network, so the
+container's `127.0.0.1:1455` is the host's:
+
+```bash
+ssh -L 1455:127.0.0.1:1455 <host>
+docker run --rm -it --network host -v oai-plan-proxy-data:/data ghcr.io/klhq/oai-plan-proxy login
+```
+
+**Import.** Sign in on a laptop and pipe the export into the volume, so no
+copy of the file lands on the server:
+
+```bash
+oai-plan-proxy login
+oai-plan-proxy export creds.json
+ssh <host> docker run --rm -i -v oai-plan-proxy-data:/data ghcr.io/klhq/oai-plan-proxy import - < creds.json
+rm creds.json
+```
+
+Then run it:
+
+```bash
+docker run -d --name oai-plan-proxy \
+  -v oai-plan-proxy-data:/data \
+  -e OAI_PLAN_PROXY_API_KEY=change-me \
+  -p 127.0.0.1:18080:18080 \
+  ghcr.io/klhq/oai-plan-proxy
+```
+
+The image healthcheck runs `oai-plan-proxy healthcheck`, which exits 0 only
+while `/healthz` answers 200. The container reports unhealthy while the
+sign-in is missing or dead.
+
 ## Serve
 
 ```bash

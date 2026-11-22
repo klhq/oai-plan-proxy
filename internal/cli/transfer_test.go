@@ -1,6 +1,7 @@
 package cli_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -124,5 +125,23 @@ func TestImportRejectsAFileWithoutAUsableSignIn(t *testing.T) {
 	}
 	if _, err := h.store(t).Load(); !errors.Is(err, store.ErrNoCredentials) {
 		t.Fatalf("Load after a rejected import = %v, want ErrNoCredentials", err)
+	}
+}
+
+func TestImportDashReadsTheCredentialsFromStandardInput(t *testing.T) {
+	h := newHarness(t)
+	b, err := os.ReadFile(exportFile(t, signedIn()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := h.env()
+	env.Stdin = bytes.NewReader(b)
+
+	if code := cli.Run(context.Background(), []string{"import", "-"}, env); code != 0 {
+		t.Fatalf("import - exit code = %d; stderr: %s", code, h.stderr.String())
+	}
+
+	if got, err := h.store(t).Load(); err != nil || got != signedIn() {
+		t.Fatalf("stored %+v, %v; want %+v", got, err, signedIn())
 	}
 }

@@ -23,6 +23,7 @@ import (
 
 // Env carries the process environment so tests can replace it.
 type Env struct {
+	Stdin         io.Reader
 	Stdout        io.Writer
 	Stderr        io.Writer
 	Getenv        func(string) string
@@ -43,7 +44,8 @@ commands:
   status   show the stored sign-in
   logout   revoke the sign-in and delete the stored credentials
   export   write the stored credentials to a file: export <file>
-  import   install exported credentials: import [--force] <file>
+  import   install exported credentials: import [--force] <file|->
+  healthcheck  exit 0 when the running proxy's /healthz answers 200
 `
 
 // shutdownTimeout bounds how long serve waits for in-flight requests.
@@ -68,6 +70,8 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return runExport(args[1:], env)
 	case "import":
 		return runImport(ctx, args[1:], env)
+	case "healthcheck":
+		return runHealthcheck(ctx, env)
 	default:
 		fmt.Fprintf(env.Stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2
@@ -254,11 +258,18 @@ func runImport(ctx context.Context, args []string, env Env) int {
 		return 2
 	}
 	if fs.NArg() != 1 {
-		fmt.Fprintln(env.Stderr, "usage: oai-plan-proxy import [--force] <file>")
+		fmt.Fprintln(env.Stderr, "usage: oai-plan-proxy import [--force] <file|->")
 		return 2
 	}
 	file := fs.Arg(0)
-	b, err := os.ReadFile(file)
+	var b []byte
+	var err error
+	if file == "-" {
+		file = "standard input"
+		b, err = io.ReadAll(io.LimitReader(env.Stdin, 1<<20))
+	} else {
+		b, err = os.ReadFile(file)
+	}
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
@@ -378,6 +389,34 @@ func runServe(ctx context.Context, args []string, env Env) int {
 	}
 	if err := <-errc; err != nil && !errors.Is(err, http.ErrServerClosed) {
 		fmt.Fprintf(env.Stderr, "serve: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// runHealthcheck probes /healthz on the listen address, for container
+// healthchecks in images that have no shell or curl.
+func runHealthcheck(ctx context.Context, env Env) int {
+	cfg, err := config.Load(env.Getenv, env.UserConfigDir)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+cfg.Listen+"/healthz", nil)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(env.Stderr, "/healthz answered %d\n", resp.StatusCode)
 		return 1
 	}
 	return 0

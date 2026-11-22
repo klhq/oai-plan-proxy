@@ -83,21 +83,27 @@ func proxy(u *fakeUpstream, tok *fakeTokens, apiKey string) http.Handler {
 	})
 }
 
-func TestModelsIsForwardedWithTheOAuthAccessToken(t *testing.T) {
-	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+// planModels answers like the plan's /v1/models: a Codex model catalog, not
+// an OpenAI model list.
+func planModels(body string) func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"gpt-5"}]}`))
-	})
+		_, _ = w.Write([]byte(body))
+	}
+}
+
+func TestModelsListsThePlanCatalogInOpenAIShape(t *testing.T) {
+	u := newUpstream(t, planModels(`{"models":[{"slug":"gpt-a","display_name":"GPT A","visibility":"list","supported_in_api":true}]}`))
 	h := proxy(u, &fakeTokens{current: "access-1"}, "")
 
 	rec := get(t, h, "/v1/models")
 
-	if rec.Code != http.StatusOK || rec.Body.String() != `{"object":"list","data":[{"id":"gpt-5"}]}` {
-		t.Fatalf("response = %d %q, want the upstream body", rec.Code, rec.Body.String())
+	want := `{"object":"list","data":[{"id":"gpt-a","object":"model","created":0,"owned_by":"openai"}]}`
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("response = %d %s, want 200 %s", rec.Code, rec.Body.String(), want)
 	}
 	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want the upstream application/json", ct)
+		t.Errorf("Content-Type = %q, want application/json", ct)
 	}
 	calls := u.received()
 	if len(calls) != 1 || calls[0] != (upstreamCall{"GET", "/v1/models", "Bearer access-1"}) {
@@ -105,20 +111,59 @@ func TestModelsIsForwardedWithTheOAuthAccessToken(t *testing.T) {
 	}
 }
 
-func TestOneModelIsForwardedByID(t *testing.T) {
-	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNotFound)
-		_, _ = w.Write([]byte(`{"error":{"message":"no such model"}}`))
-	})
+func TestModelsLeavesOutModelsThePlanHides(t *testing.T) {
+	u := newUpstream(t, planModels(`{"models":[{"slug":"gpt-a","visibility":"list"},{"slug":"codex-auto-review","visibility":"hide"}]}`))
 	h := proxy(u, &fakeTokens{current: "access-1"}, "")
 
-	rec := get(t, h, "/v1/models/gpt-5.1-codex")
+	rec := get(t, h, "/v1/models")
 
-	if rec.Code != http.StatusNotFound || rec.Body.String() != `{"error":{"message":"no such model"}}` {
-		t.Fatalf("response = %d %q, want the upstream 404 and body", rec.Code, rec.Body.String())
+	if body := rec.Body.String(); rec.Code != http.StatusOK || strings.Contains(body, "codex-auto-review") || !strings.Contains(body, `"gpt-a"`) {
+		t.Fatalf("response = %d %s, want only gpt-a", rec.Code, body)
 	}
-	if calls := u.received(); len(calls) != 1 || calls[0].path != "/v1/models/gpt-5.1-codex" {
-		t.Fatalf("upstream calls = %+v, want GET /v1/models/gpt-5.1-codex", calls)
+}
+
+func TestOneModelIsLookedUpInThePlanCatalog(t *testing.T) {
+	u := newUpstream(t, planModels(`{"models":[{"slug":"gpt-a","visibility":"list"},{"slug":"gpt-b","visibility":"list"}]}`))
+	h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+	rec := get(t, h, "/v1/models/gpt-b")
+
+	want := `{"id":"gpt-b","object":"model","created":0,"owned_by":"openai"}`
+	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != want {
+		t.Fatalf("response = %d %s, want 200 %s", rec.Code, rec.Body.String(), want)
+	}
+	if calls := u.received(); len(calls) != 1 || calls[0].path != "/v1/models" {
+		t.Fatalf("upstream calls = %+v, want one GET /v1/models: the plan token cannot read /v1/models/{id}", calls)
+	}
+}
+
+func TestAModelOutsideTheListedCatalogAnswers404ModelNotFound(t *testing.T) {
+	u := newUpstream(t, planModels(`{"models":[{"slug":"gpt-a","visibility":"list"},{"slug":"codex-auto-review","visibility":"hide"}]}`))
+	h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+	for _, id := range []string{"gpt-z", "codex-auto-review"} {
+		rec := get(t, h, "/v1/models/"+id)
+
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s: status = %d, want 404", id, rec.Code)
+		}
+		if _, typ, code := openAIError(t, rec); typ != "invalid_request_error" || code != "model_not_found" {
+			t.Fatalf("%s: error = %s/%s, want invalid_request_error/model_not_found", id, typ, code)
+		}
+	}
+}
+
+func TestAnUnreadableCatalogAnswers502InsteadOfAnEmptyList(t *testing.T) {
+	u := newUpstream(t, planModels(`<html>maintenance</html>`))
+	h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+	rec := get(t, h, "/v1/models")
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d %s, want 502", rec.Code, rec.Body.String())
+	}
+	if _, _, code := openAIError(t, rec); code != "upstream_invalid" {
+		t.Fatalf("code = %q, want upstream_invalid", code)
 	}
 }
 
@@ -128,7 +173,7 @@ func TestAnUpstream401IsRetriedOnceWithARefreshedToken(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
-		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+		_, _ = w.Write([]byte(`{"models":[]}`))
 	})
 	tok := &fakeTokens{current: "access-1", next: "access-2"}
 	h := proxy(u, tok, "")
@@ -210,7 +255,7 @@ func TestWithoutAUsableLoginV1AnswersA503ThatPointsToLogin(t *testing.T) {
 
 func TestAConfiguredAPIKeyGuardsV1ButNotHealthz(t *testing.T) {
 	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+		_, _ = w.Write([]byte(`{"models":[]}`))
 	})
 	h := proxy(u, &fakeTokens{current: "access-1"}, "proxy-key")
 	request := func(path, authorization string) *httptest.ResponseRecorder {

@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
-	"net/url"
 
 	"github.com/klhq/oai-plan-proxy/internal/auth"
 )
@@ -54,12 +53,8 @@ func New(opts Options) http.Handler {
 		})
 	})
 	p := &proxy{opts: opts}
-	mux.Handle("GET /v1/models", p.v1(func(w http.ResponseWriter, r *http.Request) {
-		p.forward(w, r, "/models")
-	}))
-	mux.Handle("GET /v1/models/{id}", p.v1(func(w http.ResponseWriter, r *http.Request) {
-		p.forward(w, r, "/models/"+url.PathEscape(r.PathValue("id")))
-	}))
+	mux.Handle("GET /v1/models", p.v1(p.listModels))
+	mux.Handle("GET /v1/models/{id}", p.v1(p.getModel))
 	mux.Handle("POST /v1/responses", p.v1(p.responsesHandler))
 	mux.Handle("/v1/", p.keyed(notFound))
 	return mux

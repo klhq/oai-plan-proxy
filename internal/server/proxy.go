@@ -17,15 +17,8 @@ type proxy struct {
 	opts Options
 }
 
-// forward sends a bodiless request to Upstream+path and copies the answer
-// back.
-func (p *proxy) forward(w http.ResponseWriter, r *http.Request, path string) {
-	resp, err := p.send(r.Context(), r.Method, path, nil)
-	if err != nil {
-		writeSendError(w, err)
-		return
-	}
-	defer resp.Body.Close()
+// copyResponse copies an upstream answer's status, Content-Type and body.
+func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
 		w.Header().Set("Content-Type", ct)
 	}

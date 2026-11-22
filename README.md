@@ -105,13 +105,23 @@ otherwise. It needs no API key. Point your container healthcheck at it.
 
 | Route | Behavior |
 |---|---|
-| `GET /v1/models`, `GET /v1/models/{id}` | Forwarded with the plan's access token. |
+| `GET /v1/models`, `GET /v1/models/{id}` | The plan's model catalog as an OpenAI model list. See below. |
 | `POST /v1/responses` | Adjusted for plan usage, then forwarded. See below. |
 | `GET /healthz` | Liveness and login state. |
 | Any other `/v1/*` path | OpenAI-shaped 404. |
 
 An upstream 401 triggers one token refresh and one retry. Without a usable
 sign-in, `/v1/*` answers 503 with a message to run `oai-plan-proxy login`.
+
+### `/v1/models`
+
+The plan answers `/v1/models` with a Codex model catalog, not an OpenAI model
+list. The proxy fetches that catalog with the plan's access token and
+answers with an OpenAI list: each model's `slug` becomes its `id`, and
+models the catalog marks `hide` are left out. `GET /v1/models/{id}` looks the
+id up in the same list and answers 404 `model_not_found` when it is not
+there, because the plan token cannot read the upstream route for a single
+model.
 
 ### `/v1/responses`
 

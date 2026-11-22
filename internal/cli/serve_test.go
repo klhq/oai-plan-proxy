@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-func TestServeForwardsModelsWithTheStoredAccessToken(t *testing.T) {
+func TestServeListsModelsWithTheStoredAccessToken(t *testing.T) {
 	h := newHarness(t)
 	creds := signedIn()
 	creds.ExpiresAt = time.Now().Add(time.Hour)
@@ -21,7 +21,7 @@ func TestServeForwardsModelsWithTheStoredAccessToken(t *testing.T) {
 		case seen <- r.URL.Path + " " + r.Header.Get("Authorization"):
 		default:
 		}
-		_, _ = w.Write([]byte(`{"object":"list","data":[]}`))
+		_, _ = w.Write([]byte(`{"models":[{"slug":"gpt-a","visibility":"list"}]}`))
 	}))
 	t.Cleanup(upstream.Close)
 	h.upstream = upstream.URL + "/v1"
@@ -42,8 +42,8 @@ func TestServeForwardsModelsWithTheStoredAccessToken(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK || string(body) != `{"object":"list","data":[]}` {
-		t.Fatalf("response = %d %q, want the upstream list", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"id":"gpt-a"`) {
+		t.Fatalf("response = %d %q, want a model list with gpt-a", resp.StatusCode, body)
 	}
 	select {
 	case got := <-seen:

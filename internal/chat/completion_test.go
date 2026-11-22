@@ -79,3 +79,16 @@ func TestARefusalFillsRefusalAndLeavesContentNull(t *testing.T) {
 		t.Fatalf("message = content %s refusal %s, want null and the refusal text", m["content"], m["refusal"])
 	}
 }
+
+func TestFunctionCallItemsBecomeToolCallsAndFinishWithToolCalls(t *testing.T) {
+	got := completion(t, `{"id":"r","created_at":1,"model":"m","status":"completed","output":[
+		{"type":"reasoning","id":"rs_1","summary":[]},
+		{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Taipei\"}","status":"completed"},
+		{"type":"function_call","id":"fc_2","call_id":"call_2","name":"get_time","arguments":"{}","status":"completed"}]}`)
+
+	assertJSON(t, "completion", got, `{"id":"r","object":"chat.completion","created":1,"model":"m",
+		"choices":[{"index":0,"finish_reason":"tool_calls","message":{"role":"assistant","content":null,"refusal":null,
+			"tool_calls":[
+				{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Taipei\"}"}},
+				{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}]}}]}`)
+}

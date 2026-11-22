@@ -21,6 +21,11 @@ type response struct {
 // finishReason maps how a response ended to a Chat Completions
 // finish_reason.
 func (r *response) finishReason() string {
+	for _, it := range r.Output {
+		if it.Type == "function_call" {
+			return "tool_calls"
+		}
+	}
 	if r.Status == "incomplete" && r.Incomplete != nil {
 		switch r.Incomplete.Reason {
 		case "max_output_tokens":
@@ -68,8 +73,23 @@ func (u *usage) chat() *chatUsage {
 }
 
 type outputItem struct {
-	Type    string `json:"type"`
-	Content []part `json:"content"`
+	Type      string `json:"type"`
+	Content   []part `json:"content"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
+}
+
+// chatToolCall is a tool call in a Chat Completions message.
+type chatToolCall struct {
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
+	Function chatFunction `json:"function"`
+}
+
+type chatFunction struct {
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type chatCompletion struct {
@@ -88,9 +108,10 @@ type choice struct {
 }
 
 type chatMessage struct {
-	Role    string  `json:"role"`
-	Content *string `json:"content"`
-	Refusal *string `json:"refusal"`
+	Role      string         `json:"role"`
+	Content   *string        `json:"content"`
+	Refusal   *string        `json:"refusal"`
+	ToolCalls []chatToolCall `json:"tool_calls,omitempty"`
 }
 
 // Completion turns the response object of a response.completed event into a
@@ -102,7 +123,13 @@ func Completion(body []byte) ([]byte, error) {
 	}
 	var text, refusal strings.Builder
 	var hasText, hasRefusal bool
+	var calls []chatToolCall
 	for _, it := range r.Output {
+		if it.Type == "function_call" {
+			calls = append(calls, chatToolCall{ID: it.CallID, Type: "function",
+				Function: chatFunction{Name: it.Name, Arguments: it.Arguments}})
+			continue
+		}
 		if it.Type != "message" {
 			continue
 		}
@@ -117,7 +144,7 @@ func Completion(body []byte) ([]byte, error) {
 			}
 		}
 	}
-	msg := chatMessage{Role: "assistant"}
+	msg := chatMessage{Role: "assistant", ToolCalls: calls}
 	if hasText {
 		msg.Content = new(text.String())
 	}

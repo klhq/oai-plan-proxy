@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"strings"
 
 	"github.com/klhq/oai-plan-proxy/internal/responses"
 )
@@ -32,8 +33,33 @@ type Translation struct {
 }
 
 type message struct {
-	Role    string          `json:"role"`
-	Content json.RawMessage `json:"content"`
+	Role       string          `json:"role"`
+	Content    json.RawMessage `json:"content"`
+	ToolCalls  []toolCall      `json:"tool_calls"`
+	ToolCallID string          `json:"tool_call_id"`
+}
+
+// functionCallOutput is a Responses function_call_output input item.
+type functionCallOutput struct {
+	Type   string `json:"type"`
+	CallID string `json:"call_id"`
+	Output string `json:"output"`
+}
+
+type toolCall struct {
+	ID       string `json:"id"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// functionCall is a Responses function_call input item.
+type functionCall struct {
+	Type      string `json:"type"`
+	CallID    string `json:"call_id"`
+	Name      string `json:"name"`
+	Arguments string `json:"arguments"`
 }
 
 type part struct {
@@ -63,6 +89,22 @@ func Translate(body []byte) (Translation, error) {
 		return Translation{}, err
 	}
 	delete(f, "messages")
+	if raw, ok := f["tools"]; ok {
+		tools, err := flattenTools(raw)
+		if err != nil {
+			return Translation{}, err
+		}
+		f["tools"] = tools
+	}
+	var named struct {
+		Type     string `json:"type"`
+		Function struct {
+			Name string `json:"name"`
+		} `json:"function"`
+	}
+	if json.Unmarshal(f["tool_choice"], &named) == nil && named.Type == "function" {
+		f["tool_choice"], _ = json.Marshal(map[string]string{"type": "function", "name": named.Function.Name})
+	}
 	var tr Translation
 	_ = json.Unmarshal(f["stream"], &tr.Stream)
 	var opts struct {
@@ -79,12 +121,16 @@ func Translate(body []byte) (Translation, error) {
 		}
 	}
 	slices.Sort(dropped)
-	input := []item{}
+	input := []any{}
 	for i, m := range msgs {
 		texts, err := contentTexts(m.Content)
 		if err != nil {
 			return Translation{}, &responses.Error{Param: fmt.Sprintf("messages[%d].content", i),
 				Code: "invalid_value", Message: err.Error()}
+		}
+		if m.Role == "tool" {
+			input = append(input, functionCallOutput{Type: "function_call_output", CallID: m.ToolCallID, Output: strings.Join(texts, "")})
+			continue
 		}
 		role := m.Role
 		if role == "system" {
@@ -99,7 +145,12 @@ func Translate(body []byte) (Translation, error) {
 		for _, text := range texts {
 			parts = append(parts, part{Type: kind, Text: text})
 		}
-		input = append(input, item{Role: role, Content: parts})
+		if len(parts) > 0 || len(m.ToolCalls) == 0 {
+			input = append(input, item{Role: role, Content: parts})
+		}
+		for _, c := range m.ToolCalls {
+			input = append(input, functionCall{Type: "function_call", CallID: c.ID, Name: c.Function.Name, Arguments: c.Function.Arguments})
+		}
 	}
 	in, err := json.Marshal(input)
 	if err != nil {
@@ -114,6 +165,9 @@ func Translate(body []byte) (Translation, error) {
 // contentTexts reads message content, which is a string or an array of
 // typed parts.
 func contentTexts(raw json.RawMessage) ([]string, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
 		return []string{text}, nil
@@ -159,4 +213,29 @@ func checkUnsupported(f map[string]json.RawMessage) error {
 		return reject("modalities", "the plan route returns text only")
 	}
 	return nil
+}
+
+// flattenTools moves each function tool's fields up one level, the shape the
+// Responses API uses. Field values are kept byte for byte.
+func flattenTools(raw json.RawMessage) (json.RawMessage, error) {
+	var tools []struct {
+		Type     string                     `json:"type"`
+		Function map[string]json.RawMessage `json:"function"`
+	}
+	if err := json.Unmarshal(raw, &tools); err != nil {
+		return nil, &responses.Error{Param: "tools", Code: "invalid_value", Message: "tools must be an array of tools"}
+	}
+	out := make([]map[string]json.RawMessage, 0, len(tools))
+	for i, t := range tools {
+		if t.Type != "function" {
+			return nil, &responses.Error{Param: fmt.Sprintf("tools[%d]", i), Code: "unsupported_tool",
+				Message: fmt.Sprintf("tool type %q is not supported on /v1/chat/completions; use function tools, or call /v1/responses", t.Type)}
+		}
+		flat := map[string]json.RawMessage{"type": json.RawMessage(`"function"`)}
+		for k, v := range t.Function {
+			flat[k] = v
+		}
+		out = append(out, flat)
+	}
+	return json.Marshal(out)
 }

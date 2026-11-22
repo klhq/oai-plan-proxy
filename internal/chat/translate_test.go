@@ -167,3 +167,60 @@ func TestStreamAndIncludeUsageAreRecordedAndStreamOptionsIsRemoved(t *testing.T)
 		t.Errorf("without stream: Stream=%v IncludeUsage=%v, want both false", plain.Stream, plain.IncludeUsage)
 	}
 }
+
+func TestFunctionToolsAreFlattened(t *testing.T) {
+	tr := translate(t, `{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[
+		{"type":"function","function":{"name":"get_weather","description":"Weather now","parameters":{"type":"object","properties":{"city":{"type":"string"}}},"strict":true}}]}`)
+
+	assertJSON(t, "tools", fields(t, tr.Body)["tools"], `[
+		{"type":"function","name":"get_weather","description":"Weather now","parameters":{"type":"object","properties":{"city":{"type":"string"}}},"strict":true}]`)
+}
+
+func TestANonFunctionToolIsRejectedNamingItsIndex(t *testing.T) {
+	_, err := chat.Translate([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"tools":[
+		{"type":"function","function":{"name":"f"}},{"type":"custom","custom":{"name":"g"}}]}`))
+
+	var reqErr *responses.Error
+	if !errors.As(err, &reqErr) || reqErr.Param != "tools[1]" {
+		t.Fatalf("err = %v, want a request error with param tools[1]", err)
+	}
+}
+
+func TestToolChoiceNamingAFunctionIsFlattenedAndStringsPassThrough(t *testing.T) {
+	const msgs = `"model":"m","messages":[{"role":"user","content":"hi"}]`
+	for choice, want := range map[string]string{
+		`{"type":"function","function":{"name":"get_weather"}}`: `{"type":"function","name":"get_weather"}`,
+		`"auto"`:     `"auto"`,
+		`"none"`:     `"none"`,
+		`"required"`: `"required"`,
+	} {
+		tr := translate(t, `{`+msgs+`,"tool_choice":`+choice+`}`)
+
+		assertJSON(t, "tool_choice "+choice, fields(t, tr.Body)["tool_choice"], want)
+	}
+}
+
+func TestAssistantToolCallsBecomeFunctionCallItemsAfterItsText(t *testing.T) {
+	tr := translate(t, `{"model":"m","messages":[
+		{"role":"user","content":"weather?"},
+		{"role":"assistant","content":"Checking.","tool_calls":[
+			{"id":"call_1","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Taipei\"}"}}]},
+		{"role":"assistant","content":null,"tool_calls":[
+			{"id":"call_2","type":"function","function":{"name":"get_time","arguments":"{}"}}]}]}`)
+
+	assertJSON(t, "input", fields(t, tr.Body)["input"], `[
+		{"role":"user","content":[{"type":"input_text","text":"weather?"}]},
+		{"role":"assistant","content":[{"type":"output_text","text":"Checking."}]},
+		{"type":"function_call","call_id":"call_1","name":"get_weather","arguments":"{\"city\":\"Taipei\"}"},
+		{"type":"function_call","call_id":"call_2","name":"get_time","arguments":"{}"}]`)
+}
+
+func TestAToolMessageBecomesAFunctionCallOutput(t *testing.T) {
+	tr := translate(t, `{"model":"m","messages":[
+		{"role":"tool","tool_call_id":"call_1","content":"{\"temp\":21}"},
+		{"role":"tool","tool_call_id":"call_2","content":[{"type":"text","text":"12:00"},{"type":"text","text":" UTC"}]}]}`)
+
+	assertJSON(t, "input", fields(t, tr.Body)["input"], `[
+		{"type":"function_call_output","call_id":"call_1","output":"{\"temp\":21}"},
+		{"type":"function_call_output","call_id":"call_2","output":"12:00 UTC"}]`)
+}

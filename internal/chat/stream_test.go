@@ -2,6 +2,7 @@ package chat_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/klhq/oai-plan-proxy/internal/chat"
@@ -66,4 +67,36 @@ func TestCompletionEndsWithAFinishChunkAndAUsageChunkWhenAsked(t *testing.T) {
 	assertJSON(t, "usage chunk", withUsage[3], `{`+head+`,"choices":[],
 		"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7,
 			"prompt_tokens_details":{"cached_tokens":0},"completion_tokens_details":{"reasoning_tokens":0}}}`)
+}
+
+func TestFunctionCallsStreamAsIndexedToolCallDeltas(t *testing.T) {
+	chunks := feed(t, false, created,
+		`{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[]}}`,
+		`{"type":"response.reasoning_summary_text.delta","item_id":"rs_1","delta":"thinking"}`,
+		`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"get_weather","arguments":""}}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":"{\"city\":"}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"fc_1","output_index":1,"delta":"\"Taipei\"}"}`,
+		`{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"get_time","arguments":""}}`,
+		`{"type":"response.function_call_arguments.delta","item_id":"fc_2","output_index":2,"delta":"{}"}`,
+		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"function_call","call_id":"call_1"}]}}`)
+
+	head := `"id":"resp_1","object":"chat.completion.chunk","created":1763800000,"model":"gpt-a"`
+	d := func(delta, finish string) string {
+		return `{` + head + `,"choices":[{"index":0,"delta":` + delta + `,"finish_reason":` + finish + `}]}`
+	}
+	want := []string{
+		d(`{"role":"assistant"}`, `null`),
+		d(`{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]}`, `null`),
+		d(`{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":"}}]}`, `null`),
+		d(`{"tool_calls":[{"index":0,"function":{"arguments":"\"Taipei\"}"}}]}`, `null`),
+		d(`{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"get_time","arguments":""}}]}`, `null`),
+		d(`{"tool_calls":[{"index":1,"function":{"arguments":"{}"}}]}`, `null`),
+		d(`{}`, `"tool_calls"`),
+	}
+	if len(chunks) != len(want) {
+		t.Fatalf("got %d chunks:\n%s\nwant %d", len(chunks), chunks, len(want))
+	}
+	for i := range want {
+		assertJSON(t, fmt.Sprintf("chunk %d", i), chunks[i], want[i])
+	}
 }

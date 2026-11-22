@@ -12,11 +12,15 @@ type Streamer struct {
 	id, model    string
 	created      int64
 	started      bool
+	// calls maps a function_call item id to its tool_calls index.
+	calls map[string]int
 }
 
 // NewStreamer returns a Streamer. includeUsage adds the usage chunk that
 // stream_options.include_usage asks for.
-func NewStreamer(includeUsage bool) *Streamer { return &Streamer{includeUsage: includeUsage} }
+func NewStreamer(includeUsage bool) *Streamer {
+	return &Streamer{includeUsage: includeUsage, calls: map[string]int{}}
+}
 
 type chunk struct {
 	ID      string        `json:"id"`
@@ -34,8 +38,21 @@ type chunkChoice struct {
 }
 
 type delta struct {
-	Role    string `json:"role,omitempty"`
-	Content string `json:"content,omitempty"`
+	Role      string          `json:"role,omitempty"`
+	Content   string          `json:"content,omitempty"`
+	ToolCalls []toolCallDelta `json:"tool_calls,omitempty"`
+}
+
+type toolCallDelta struct {
+	Index    int           `json:"index"`
+	ID       string        `json:"id,omitempty"`
+	Type     string        `json:"type,omitempty"`
+	Function functionDelta `json:"function"`
+}
+
+type functionDelta struct {
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments"`
 }
 
 // Chunks returns the chunks one event produces, often none.
@@ -54,6 +71,34 @@ func (s *Streamer) Chunks(ev responses.Event) []json.RawMessage {
 		}
 		_ = json.Unmarshal(ev.Data, &e)
 		return s.emit(delta{Content: e.Delta})
+	case "response.output_item.added":
+		var e struct {
+			Item struct {
+				Type   string `json:"type"`
+				ID     string `json:"id"`
+				CallID string `json:"call_id"`
+				Name   string `json:"name"`
+			} `json:"item"`
+		}
+		_ = json.Unmarshal(ev.Data, &e)
+		if e.Item.Type != "function_call" {
+			return nil
+		}
+		i := len(s.calls)
+		s.calls[e.Item.ID] = i
+		return s.emit(delta{ToolCalls: []toolCallDelta{{Index: i, ID: e.Item.CallID, Type: "function",
+			Function: functionDelta{Name: e.Item.Name}}}})
+	case "response.function_call_arguments.delta":
+		var e struct {
+			ItemID string `json:"item_id"`
+			Delta  string `json:"delta"`
+		}
+		_ = json.Unmarshal(ev.Data, &e)
+		i, ok := s.calls[e.ItemID]
+		if !ok {
+			return nil
+		}
+		return s.emit(delta{ToolCalls: []toolCallDelta{{Index: i, Function: functionDelta{Arguments: e.Delta}}}})
 	case "response.completed":
 		var e struct {
 			Response response `json:"response"`

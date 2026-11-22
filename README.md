@@ -323,6 +323,11 @@ oai-plan-proxy logout
 If the revocation fails, the credentials stay so you can run `logout` again.
 The `host_id` file stays in every case.
 
+## Security
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability, what the
+proxy protects, and how to verify a release.
+
 ## License
 
 [MIT](LICENSE)

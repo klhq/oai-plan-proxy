@@ -1,0 +1,15 @@
+# The module has no dependencies outside the standard library, so only the
+# workflow actions and the Dockerfile base images are tracked.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly

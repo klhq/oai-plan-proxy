@@ -34,6 +34,12 @@ oai-plan-proxy login
 screen, and the command stores the result. `--port` changes the callback
 port.
 
+If the browser runs on another machine, the callback page fails to load
+there. Copy the full address from that browser's address bar and paste it
+into the waiting `login`. It completes the sign-in the same way. A line that
+is not the callback address, or one from an older sign-in, gets a hint and
+`login` keeps waiting.
+
 The first sign-in registers this host with OpenAI and receives an issued
 client ID (`oaiapp_...`). Later sign-ins reuse that ID, so `login` after a
 dead sign-in does not register a new client.
@@ -50,10 +56,21 @@ expiry. It never prints a token.
 ### Sign in on a headless server
 
 The callback listener binds `127.0.0.1` only. On a server without a browser,
-use one of these two paths.
+use one of these paths.
 
-**SSH tunnel (preferred).** Forward the callback port from your laptop, run
-`login` on the server, and open the printed URL in the laptop browser:
+**Paste the address (preferred).** Run `login` on the server over SSH, open
+the printed URL in your laptop browser, approve, and paste the address the
+browser lands on back into the SSH session:
+
+```bash
+ssh <host>
+oai-plan-proxy login
+```
+
+The tokens never leave the server, and no port forwarding is needed.
+
+**SSH tunnel.** Forward the callback port from your laptop, run `login` on
+the server, and open the printed URL in the laptop browser:
 
 ```bash
 ssh -L 1455:127.0.0.1:1455 <host>
@@ -63,7 +80,7 @@ oai-plan-proxy login
 The browser redirect reaches the server through the tunnel. The tokens never
 leave the server.
 
-**Export and import (fallback).** Sign in on a machine with a browser, copy
+**Export and import.** Sign in on a machine with a browser, copy
 the credential file over SSH, and install it on the server:
 
 ```bash
@@ -90,13 +107,12 @@ docker volume create oai-plan-proxy-data
 
 Sign in once, by either path:
 
-**SSH tunnel.** On a Linux host, forward the callback port from your laptop,
-then run `login` in a one-off container on the host network, so the
-container's `127.0.0.1:1455` is the host's:
+**Paste the address.** Run `login` in a one-off interactive container, open
+the printed URL in any browser, approve, and paste the address the browser
+lands on into the container:
 
 ```bash
-ssh -L 1455:127.0.0.1:1455 <host>
-docker run --rm -it --network host -v oai-plan-proxy-data:/data ghcr.io/klhq/oai-plan-proxy login
+docker run --rm -it -v oai-plan-proxy-data:/data ghcr.io/klhq/oai-plan-proxy login
 ```
 
 **Import.** Sign in on a laptop and pipe the export into the volume, so no

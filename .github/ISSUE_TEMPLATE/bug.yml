@@ -1,0 +1,49 @@
+name: Bug report
+description: Something the proxy does wrong.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste `credentials.json`, an export file, an API key, or any token.
+        Report a vulnerability privately through the Security tab instead.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The output of `oai-plan-proxy version`.
+      placeholder: oai-plan-proxy v0.1.3 (commit 0123456789ab, go1.27.4, linux/amd64)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you run it
+      options:
+        - Release binary
+        - Container image
+        - go install
+        - Built from source
+    validations:
+      required: true
+  - type: input
+    id: client
+    attributes:
+      label: Client
+      description: What sends requests to the proxy, with its version.
+      placeholder: Open WebUI 0.6, Bifrost, the openai Python SDK, curl
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The request you sent, what you expected, and what you got.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log records
+      description: |
+        The `request` and token records around the failure. They never hold tokens or
+        conversation content, so you can paste them as they are.
+      render: text

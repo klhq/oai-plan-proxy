@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -47,6 +48,9 @@ commands:
   import   install exported credentials: import [--force] <file|->
   healthcheck  exit 0 when the running proxy's /healthz answers 200
 `
+
+// signInHint tells the operator how to repair a missing or dead sign-in.
+const signInHint = "run `oai-plan-proxy login`, or `oai-plan-proxy import` with credentials exported elsewhere"
 
 // shutdownTimeout bounds how long serve waits for in-flight requests.
 const shutdownTimeout = 10 * time.Second
@@ -341,6 +345,11 @@ func runServe(ctx context.Context, args []string, env Env) int {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
 	}
+	logger, err := newLogger(cfg.LogFormat, env.Stderr)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
@@ -369,7 +378,16 @@ func runServe(ctx context.Context, args []string, env Env) int {
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	fmt.Fprintf(env.Stderr, "listening on %s\n", ln.Addr())
+	login := st.State()
+	logger.Info("listening",
+		"addr", ln.Addr().String(),
+		"upstream", env.upstream(),
+		"strict", *strict,
+		"api_key_set", cfg.APIKey != "",
+		"login", string(login))
+	if login != auth.StateValid {
+		logger.Warn("sign-in needed", "login", string(login), "hint", signInHint)
+	}
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
@@ -420,4 +438,17 @@ func runHealthcheck(ctx context.Context, env Env) int {
 		return 1
 	}
 	return 0
+}
+
+// newLogger returns the serve logger for format, writing to w. An empty
+// format means text.
+func newLogger(format string, w io.Writer) (*slog.Logger, error) {
+	switch format {
+	case "", "text":
+		return slog.New(slog.NewTextHandler(w, nil)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(w, nil)), nil
+	default:
+		return nil, fmt.Errorf("%s must be text or json, not %q", config.EnvLogFormat, format)
+	}
 }

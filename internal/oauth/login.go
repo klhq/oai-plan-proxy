@@ -1,11 +1,14 @@
 package oauth
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -17,6 +20,10 @@ type LoginOptions struct {
 	// Out receives the authorization URL and instructions.
 	Out    io.Writer
 	Client *http.Client
+	// In, when set, is read for a pasted callback URL while Login waits.
+	In io.Reader
+	// Err receives the reasons a pasted line was rejected. Nil discards them.
+	Err io.Writer
 }
 
 // Login runs one interactive sign-in. It listens on 127.0.0.1 only, prints
@@ -67,6 +74,20 @@ func Login(ctx context.Context, opts LoginOptions) (Result, error) {
 		}
 	}()
 
+	// finished stops the paste reader once Login returns, so a line pasted
+	// after the sign-in completed never spends the code a second time.
+	finished := make(chan struct{})
+	defer close(finished)
+	if opts.In != nil {
+		go readPasted(opts.In, finished, func(callback url.Values) {
+			res, err := flow.Exchange(ctx, callback, opts.Client)
+			select {
+			case done <- outcome{res, err}:
+			default:
+			}
+		})
+	}
+
 	fmt.Fprintf(opts.Out, "Open this URL in a browser to sign in:\n\n%s\n\n", flow.URL)
 	fmt.Fprintf(opts.Out, "Waiting for the callback on 127.0.0.1:%d. On a remote host, forward it first:\n", p.Port)
 	fmt.Fprintf(opts.Out, "  ssh -L %d:127.0.0.1:%d <this host>\n", p.Port, p.Port)
@@ -82,3 +103,22 @@ func Login(ctx context.Context, opts LoginOptions) (Result, error) {
 // callbackShutdownTimeout bounds how long Login waits for the callback page
 // to reach the browser.
 const callbackShutdownTimeout = 5 * time.Second
+
+// readPasted reads lines from in until it ends and hands each pasted
+// callback URL's query to complete, until finished closes.
+func readPasted(in io.Reader, finished <-chan struct{}, complete func(url.Values)) {
+	sc := bufio.NewScanner(in)
+	for sc.Scan() {
+		select {
+		case <-finished:
+			// Keep draining, so a writer never blocks, but act on nothing.
+			continue
+		default:
+		}
+		u, err := url.Parse(strings.TrimSpace(sc.Text()))
+		if err != nil {
+			continue
+		}
+		complete(u.Query())
+	}
+}

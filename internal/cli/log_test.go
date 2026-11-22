@@ -3,6 +3,7 @@ package cli_test
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -80,5 +81,32 @@ func TestServeLogsTextByDefault(t *testing.T) {
 
 	if !strings.Contains(h.stderr.String(), "level=INFO msg=listening addr=") {
 		t.Fatalf("stderr = %q, want a text record for listening", h.stderr.String())
+	}
+}
+
+func TestServeLogsEachV1Request(t *testing.T) {
+	h := newHarness(t)
+	h.vars["OAI_PLAN_PROXY_LOG_FORMAT"] = "json"
+	addr := freeAddr(t)
+	h.vars["OAI_PLAN_PROXY_LISTEN"] = addr
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runAsync(ctx, []string{"serve"}, h.env())
+	waitForGet(t, "http://"+addr+"/healthz").Body.Close()
+
+	resp, err := http.Get("http://" + addr + "/v1/unknown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	stopServe(t, cancel, done)
+
+	var v1 []map[string]any
+	for _, rec := range logRecords(t, h.stderr.String(), "request") {
+		if rec["path"] == "/v1/unknown" {
+			v1 = append(v1, rec)
+		}
+	}
+	if len(v1) != 1 || v1[0]["status"] != float64(404) {
+		t.Fatalf("/v1/unknown records = %v; stderr:\n%s", v1, h.stderr.String())
 	}
 }

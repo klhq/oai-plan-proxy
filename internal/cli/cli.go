@@ -375,6 +375,7 @@ func runServe(ctx context.Context, args []string, env Env) int {
 			Client: &http.Client{Transport: env.httpClient().Transport},
 			APIKey: cfg.APIKey,
 			Strict: *strict,
+			Logger: logger,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}

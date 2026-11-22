@@ -79,7 +79,17 @@ func Login(ctx context.Context, opts LoginOptions) (Result, error) {
 	finished := make(chan struct{})
 	defer close(finished)
 	if opts.In != nil {
-		go readPasted(opts.In, finished, func(callback url.Values) {
+		errOut := opts.Err
+		if errOut == nil {
+			errOut = io.Discard
+		}
+		go readPasted(opts.In, errOut, finished, func(callback url.Values) {
+			// A wrong state is a paste from another sign-in. Nothing was
+			// spent, so the operator can paste again.
+			if err := flow.checkState(callback); err != nil {
+				fmt.Fprintln(errOut, err)
+				return
+			}
 			res, err := flow.Exchange(ctx, callback, opts.Client)
 			select {
 			case done <- outcome{res, err}:
@@ -106,7 +116,7 @@ const callbackShutdownTimeout = 5 * time.Second
 
 // readPasted reads lines from in until it ends and hands each pasted
 // callback URL's query to complete, until finished closes.
-func readPasted(in io.Reader, finished <-chan struct{}, complete func(url.Values)) {
+func readPasted(in io.Reader, errOut io.Writer, finished <-chan struct{}, complete func(url.Values)) {
 	sc := bufio.NewScanner(in)
 	for sc.Scan() {
 		select {
@@ -116,9 +126,14 @@ func readPasted(in io.Reader, finished <-chan struct{}, complete func(url.Values
 		default:
 		}
 		u, err := url.Parse(strings.TrimSpace(sc.Text()))
-		if err != nil {
+		if err != nil || !u.Query().Has("state") {
+			// The line is not echoed: it may hold part of a code.
+			fmt.Fprintln(errOut, pasteHint)
 			continue
 		}
 		complete(u.Query())
 	}
 }
+
+// pasteHint tells the operator what to paste after a rejected line.
+const pasteHint = "That is not the callback address. Copy the browser's address bar after approving, then paste the full address here."

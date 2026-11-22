@@ -6,7 +6,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,6 +24,8 @@ type pasteLogin struct {
 	stderr  *safeBuffer
 	done    chan pasteOutcome
 	authURL string
+	// failExchange makes the token endpoint reject the code.
+	failExchange atomic.Bool
 }
 
 type pasteOutcome struct {
@@ -51,6 +55,12 @@ func startPasteLogin(t *testing.T) *pasteLogin {
 	t.Helper()
 	l := &pasteLogin{out: newURLCatcher(t), stderr: &safeBuffer{}, done: make(chan pasteOutcome, 1)}
 	l.tokens = newFakeTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if l.failExchange.Load() {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+			return
+		}
 		claims := map[string]any{
 			"iss": testEndpoints.Issuer, "aud": "oaiapp_issued", "sub": "user-sub-1",
 			"email": "user@example.com", "nonce": query(t, l.authURL).Get("nonce"),
@@ -159,5 +169,73 @@ func TestTheListenerStillWorksAfterInputEnds(t *testing.T) {
 
 	if o := l.wait(t); o.err != nil {
 		t.Fatalf("Login ended with %v, want the browser callback to complete it", o.err)
+	}
+}
+
+func TestALineThatIsNotACallbackURLIsRejectedAndLoginKeepsWaiting(t *testing.T) {
+	for _, line := range []string{"not-a-callback-secretish", "http://[::1", "http://127.0.0.1:1455/auth/callback?code=only"} {
+		t.Run(line, func(t *testing.T) {
+			l := startPasteLogin(t)
+
+			l.paste(t, line)
+			l.paste(t, l.callbackURL(t, query(t, l.authURL).Get("state")))
+
+			if o := l.wait(t); o.err != nil {
+				t.Fatalf("Login ended with %v, want the second paste to complete it", o.err)
+			}
+			if n := l.tokens.requests.Load(); n != 1 {
+				t.Fatalf("token requests = %d, want 1", n)
+			}
+			errOut := l.stderr.String()
+			if !strings.Contains(errOut, "paste the full address") || strings.Contains(errOut, line) {
+				t.Fatalf("stderr = %q, want a hint without the rejected line", errOut)
+			}
+		})
+	}
+}
+
+func TestAPastedURLWithAnotherStateIsRejectedAndLoginKeepsWaiting(t *testing.T) {
+	l := startPasteLogin(t)
+
+	l.paste(t, l.callbackURL(t, "state-from-an-older-sign-in"))
+	l.paste(t, l.callbackURL(t, query(t, l.authURL).Get("state")))
+
+	if o := l.wait(t); o.err != nil {
+		t.Fatalf("Login ended with %v, want the second paste to complete it", o.err)
+	}
+	if n := l.tokens.requests.Load(); n != 1 {
+		t.Fatalf("token requests = %d, want 1", n)
+	}
+	if errOut := l.stderr.String(); !strings.Contains(errOut, "unexpected state") {
+		t.Fatalf("stderr = %q, want the unexpected-state message", errOut)
+	}
+}
+
+func TestAPastedDeclinedConsentEndsTheSignIn(t *testing.T) {
+	l := startPasteLogin(t)
+	declined := query(t, l.authURL).Get("redirect_uri") + "?" + url.Values{
+		"error": {"access_denied"}, "state": {query(t, l.authURL).Get("state")},
+	}.Encode()
+
+	l.paste(t, declined)
+
+	o := l.wait(t)
+	if o.err == nil || !strings.Contains(o.err.Error(), "sign-in was not completed: access_denied") {
+		t.Fatalf("err = %v, want the declined sign-in", o.err)
+	}
+	if n := l.tokens.requests.Load(); n != 0 {
+		t.Fatalf("token requests = %d, want 0", n)
+	}
+}
+
+func TestAPastedCallbackWhoseExchangeFailsEndsTheSignIn(t *testing.T) {
+	l := startPasteLogin(t)
+	l.failExchange.Store(true)
+
+	l.paste(t, l.callbackURL(t, query(t, l.authURL).Get("state")))
+
+	o := l.wait(t)
+	if o.err == nil || !strings.Contains(o.err.Error(), "invalid_grant") {
+		t.Fatalf("err = %v, want the failed exchange", o.err)
 	}
 }

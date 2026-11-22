@@ -137,8 +137,8 @@ type Result struct {
 
 // Exchange validates the callback query and trades its code for tokens.
 func (f *Flow) Exchange(ctx context.Context, callback url.Values, client *http.Client) (Result, error) {
-	if subtle.ConstantTimeCompare([]byte(callback.Get("state")), []byte(f.state)) != 1 {
-		return Result{}, errors.New("sign-in callback has an unexpected state; start the sign-in again")
+	if err := f.checkState(callback); err != nil {
+		return Result{}, err
 	}
 	if oauthErr := callback.Get("error"); oauthErr != "" {
 		return Result{}, fmt.Errorf("sign-in was not completed: %s", oauthErr)
@@ -206,4 +206,12 @@ func randomString() (string, error) {
 		return "", fmt.Errorf("generate random value: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// checkState rejects a callback that does not belong to this sign-in.
+func (f *Flow) checkState(callback url.Values) error {
+	if subtle.ConstantTimeCompare([]byte(callback.Get("state")), []byte(f.state)) != 1 {
+		return errors.New("sign-in callback has an unexpected state; start the sign-in again")
+	}
+	return nil
 }

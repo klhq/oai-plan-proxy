@@ -2,7 +2,8 @@
 
 A self-hosted proxy that serves an OpenAI-compatible API from your ChatGPT
 plan. It signs in with the Sign in with ChatGPT flow for open-source tools,
-keeps the sign-in alive, and forwards `/v1/models` and `/v1/responses`.
+keeps the sign-in alive, and serves `/v1/models`, `/v1/responses`, and
+`/v1/chat/completions`.
 
 > **Not an official OpenAI project.** This project is not affiliated with,
 > endorsed by, or supported by OpenAI. Requests made through it count against
@@ -107,6 +108,7 @@ otherwise. It needs no API key. Point your container healthcheck at it.
 |---|---|
 | `GET /v1/models`, `GET /v1/models/{id}` | The plan's model catalog as an OpenAI model list. See below. |
 | `POST /v1/responses` | Adjusted for plan usage, then forwarded. See below. |
+| `POST /v1/chat/completions` | Translated to `/v1/responses` and back. See below. |
 | `GET /healthz` | Liveness and login state. |
 | Any other `/v1/*` path | OpenAI-shaped 404. |
 
@@ -155,6 +157,43 @@ When the plan's usage limit is reached
 (`subscription_sharing_usage_limit_exceeded`), the proxy answers 429 with
 `x-should-retry: false`. A gateway in front of the proxy can then fall back
 to another provider instead of retrying.
+
+### `/v1/chat/completions`
+
+The plan serves only the Responses API, so the proxy translates Chat
+Completions requests to it and translates the answer back. The request then
+goes through the same `/v1/responses` handling described above.
+
+What is translated:
+
+- `system` and `developer` messages become developer messages in place.
+  User text, `image_url` parts, and `file` parts with `file_data` become
+  input parts. Assistant text and `refusal` parts stay in the history.
+- Assistant `tool_calls` and `tool` messages become `function_call` and
+  `function_call_output` items.
+- `function` tools, `tool_choice`, `parallel_tool_calls`,
+  `response_format`, `reasoning_effort`, and `service_tier` map to their
+  Responses equivalents.
+- The answer comes back as `chat.completion`, or as
+  `chat.completion.chunk` events ending with `data: [DONE]` when `stream`
+  is true. Text, refusals, `tool_calls`, `finish_reason`, and `usage` are
+  filled in. `stream_options.include_usage` adds the usage chunk.
+
+What is not:
+
+- Fields without a Responses equivalent, such as `max_tokens`,
+  `max_completion_tokens`, `stop`, `seed`, `logit_bias`, and the penalties,
+  are removed and listed in `x-oai-plan-proxy-dropped-params`. With
+  `serve --strict`, the request gets a 400 instead.
+- Requests the proxy cannot answer as asked get a 400 that names the field:
+  `n` above 1, `audio`, non-text `modalities`, `logprobs`, `top_logprobs`,
+  the legacy `functions` and `function_call`, non-function tools,
+  `input_audio` parts, and `file` parts that carry only a `file_id`.
+- Reasoning is not returned.
+
+A failure before the first chunk returns a real HTTP status, as on
+`/v1/responses`. A failure after output has started ends the stream with
+one `data: {"error": ...}` line and no `data: [DONE]`.
 
 ## Sign out
 

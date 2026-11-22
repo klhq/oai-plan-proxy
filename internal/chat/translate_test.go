@@ -224,3 +224,81 @@ func TestAToolMessageBecomesAFunctionCallOutput(t *testing.T) {
 		{"type":"function_call_output","call_id":"call_1","output":"{\"temp\":21}"},
 		{"type":"function_call_output","call_id":"call_2","output":"12:00 UTC"}]`)
 }
+
+func TestAnImageURLPartBecomesAnInputImage(t *testing.T) {
+	tr := translate(t, `{"model":"m","messages":[{"role":"user","content":[
+		{"type":"text","text":"what is this?"},
+		{"type":"image_url","image_url":{"url":"https://example.com/cat.png","detail":"low"}},
+		{"type":"image_url","image_url":{"url":"data:image/png;base64,iVBORw0KGgo="}}]}]}`)
+
+	assertJSON(t, "input", fields(t, tr.Body)["input"], `[{"role":"user","content":[
+		{"type":"input_text","text":"what is this?"},
+		{"type":"input_image","image_url":"https://example.com/cat.png","detail":"low"},
+		{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="}]}]`)
+}
+
+func TestAFilePartWithInlineDataBecomesAnInputFile(t *testing.T) {
+	tr := translate(t, `{"model":"m","messages":[{"role":"user","content":[
+		{"type":"file","file":{"filename":"notes.pdf","file_data":"data:application/pdf;base64,JVBERi0="}}]}]}`)
+
+	assertJSON(t, "input", fields(t, tr.Body)["input"], `[{"role":"user","content":[
+		{"type":"input_file","filename":"notes.pdf","file_data":"data:application/pdf;base64,JVBERi0="}]}]`)
+}
+
+func TestContentThePlanCannotTakeIsRejectedNamingThePart(t *testing.T) {
+	for name, p := range map[string]string{
+		"file_id":     `{"type":"file","file":{"file_id":"file-abc"}}`,
+		"input_audio": `{"type":"input_audio","input_audio":{"data":"UklGRg==","format":"wav"}}`,
+		"unknown":     `{"type":"hologram","hologram":{}}`,
+	} {
+		_, err := chat.Translate([]byte(`{"model":"m","messages":[{"role":"user","content":[{"type":"text","text":"hi"},` + p + `]}]}`))
+
+		var reqErr *responses.Error
+		if !errors.As(err, &reqErr) || reqErr.Param != "messages[0].content[1]" {
+			t.Errorf("%s: err = %v, want a request error with param messages[0].content[1]", name, err)
+		}
+	}
+}
+
+func TestAnAssistantRefusalPartIsKeptAsARefusal(t *testing.T) {
+	tr := translate(t, `{"model":"m","messages":[{"role":"assistant","content":[{"type":"refusal","refusal":"No."}]}]}`)
+
+	assertJSON(t, "input", fields(t, tr.Body)["input"], `[{"role":"assistant","content":[{"type":"refusal","refusal":"No."}]}]`)
+}
+
+func TestResponseFormatBecomesTextFormat(t *testing.T) {
+	const msgs = `"model":"m","messages":[{"role":"user","content":"hi"}]`
+	schema := `{"type":"json_schema","json_schema":{"name":"person","schema":{"type":"object","properties":{"name":{"type":"string"}}},"strict":true}}`
+	for format, want := range map[string]string{
+		schema:                   `{"format":{"type":"json_schema","name":"person","schema":{"type":"object","properties":{"name":{"type":"string"}}},"strict":true}}`,
+		`{"type":"json_object"}`: `{"format":{"type":"json_object"}}`,
+	} {
+		f := fields(t, translate(t, `{`+msgs+`,"response_format":`+format+`}`).Body)
+
+		assertJSON(t, "text for "+format, f["text"], want)
+		if _, ok := f["response_format"]; ok {
+			t.Errorf("%s: response_format was kept", format)
+		}
+	}
+	if f := fields(t, translate(t, `{`+msgs+`,"response_format":{"type":"text"}}`).Body); f["text"] != nil || f["response_format"] != nil {
+		t.Errorf("type text: text=%s response_format=%s, want both removed", f["text"], f["response_format"])
+	}
+}
+
+func TestReasoningEffortBecomesReasoningEffort(t *testing.T) {
+	f := fields(t, translate(t, `{"model":"m","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`).Body)
+
+	assertJSON(t, "reasoning", f["reasoning"], `{"effort":"high"}`)
+	if _, ok := f["reasoning_effort"]; ok {
+		t.Errorf("reasoning_effort was kept")
+	}
+}
+
+func TestAnUnknownResponseFormatIsARequestError(t *testing.T) {
+	_, err := chat.Translate([]byte(`{"model":"m","messages":[{"role":"user","content":"hi"}],"response_format":{"type":"yaml"}}`))
+
+	var reqErr *responses.Error
+	if !errors.As(err, &reqErr) || reqErr.Param != "response_format" {
+		t.Fatalf("err = %v, want a request error with param response_format", err)
+	}
+}

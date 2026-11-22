@@ -70,7 +70,7 @@ type part struct {
 
 type item struct {
 	Role    string `json:"role"`
-	Content []part `json:"content"`
+	Content []any  `json:"content"`
 }
 
 // Translate rewrites a Chat Completions request body as a Responses request.
@@ -121,15 +121,33 @@ func Translate(body []byte) (Translation, error) {
 		}
 	}
 	slices.Sort(dropped)
+	if effort, ok := f["reasoning_effort"]; ok {
+		delete(f, "reasoning_effort")
+		f["reasoning"], _ = json.Marshal(map[string]json.RawMessage{"effort": effort})
+	}
+	if raw, ok := f["response_format"]; ok {
+		delete(f, "response_format")
+		format, err := textFormat(raw)
+		if err != nil {
+			return Translation{}, err
+		}
+		if format != nil {
+			f["text"], _ = json.Marshal(map[string]json.RawMessage{"format": format})
+		}
+	}
 	input := []any{}
 	for i, m := range msgs {
-		texts, err := contentTexts(m.Content)
+		param := fmt.Sprintf("messages[%d].content", i)
+		content, err := readContent(m.Content)
 		if err != nil {
-			return Translation{}, &responses.Error{Param: fmt.Sprintf("messages[%d].content", i),
-				Code: "invalid_value", Message: err.Error()}
+			return Translation{}, &responses.Error{Param: param, Code: "invalid_value", Message: err.Error()}
 		}
 		if m.Role == "tool" {
-			input = append(input, functionCallOutput{Type: "function_call_output", CallID: m.ToolCallID, Output: strings.Join(texts, "")})
+			var out strings.Builder
+			for _, c := range content {
+				out.WriteString(c.Text)
+			}
+			input = append(input, functionCallOutput{Type: "function_call_output", CallID: m.ToolCallID, Output: out.String()})
 			continue
 		}
 		role := m.Role
@@ -137,13 +155,13 @@ func Translate(body []byte) (Translation, error) {
 			// The plan route rejects system items.
 			role = "developer"
 		}
-		kind := "input_text"
-		if role == "assistant" {
-			kind = "output_text"
-		}
-		parts := []part{}
-		for _, text := range texts {
-			parts = append(parts, part{Type: kind, Text: text})
+		parts := []any{}
+		for j, c := range content {
+			p, err := c.responsesPart(role)
+			if err != nil {
+				return Translation{}, &responses.Error{Param: fmt.Sprintf("%s[%d]", param, j), Code: "unsupported_content", Message: err.Error()}
+			}
+			parts = append(parts, p)
 		}
 		if len(parts) > 0 || len(m.ToolCalls) == 0 {
 			input = append(input, item{Role: role, Content: parts})
@@ -162,25 +180,80 @@ func Translate(body []byte) (Translation, error) {
 	return tr, err
 }
 
-// contentTexts reads message content, which is a string or an array of
-// typed parts.
-func contentTexts(raw json.RawMessage) ([]string, error) {
+// contentPart is one part of Chat Completions message content.
+type contentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Refusal  string `json:"refusal"`
+	ImageURL struct {
+		URL    string `json:"url"`
+		Detail string `json:"detail"`
+	} `json:"image_url"`
+	File struct {
+		Filename string `json:"filename"`
+		FileData string `json:"file_data"`
+		FileID   string `json:"file_id"`
+	} `json:"file"`
+}
+
+// inputFile is a Responses input_file part.
+type inputFile struct {
+	Type     string `json:"type"`
+	Filename string `json:"filename,omitempty"`
+	FileData string `json:"file_data"`
+}
+
+// refusalPart is a Responses refusal part in assistant history.
+type refusalPart struct {
+	Type    string `json:"type"`
+	Refusal string `json:"refusal"`
+}
+
+// inputImage is a Responses input_image part.
+type inputImage struct {
+	Type     string `json:"type"`
+	ImageURL string `json:"image_url"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// readContent reads message content, which is null, a string, or an array
+// of typed parts.
+func readContent(raw json.RawMessage) ([]contentPart, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
 	var text string
 	if json.Unmarshal(raw, &text) == nil {
-		return []string{text}, nil
+		return []contentPart{{Type: "text", Text: text}}, nil
 	}
-	var parts []part
+	var parts []contentPart
 	if err := json.Unmarshal(raw, &parts); err != nil {
 		return nil, fmt.Errorf("content: %w", err)
 	}
-	texts := make([]string, 0, len(parts))
-	for _, p := range parts {
-		texts = append(texts, p.Text)
+	return parts, nil
+}
+
+// responsesPart converts c to the Responses part a message with role holds.
+func (c contentPart) responsesPart(role string) (any, error) {
+	switch c.Type {
+	case "text":
+		if role == "assistant" {
+			return part{Type: "output_text", Text: c.Text}, nil
+		}
+		return part{Type: "input_text", Text: c.Text}, nil
+	case "image_url":
+		return inputImage{Type: "input_image", ImageURL: c.ImageURL.URL, Detail: c.ImageURL.Detail}, nil
+	case "file":
+		if c.File.FileData == "" {
+			return nil, fmt.Errorf("a file part needs file_data: ChatGPT plan usage has no file upload, so file_id cannot be resolved")
+		}
+		return inputFile{Type: "input_file", Filename: c.File.Filename, FileData: c.File.FileData}, nil
+	case "refusal":
+		return refusalPart{Type: "refusal", Refusal: c.Refusal}, nil
+	case "input_audio":
+		return nil, fmt.Errorf("audio input is not supported with ChatGPT plan usage")
 	}
-	return texts, nil
+	return nil, fmt.Errorf("content part type %q is not supported", c.Type)
 }
 
 // checkUnsupported rejects requests whose answer the plan cannot shape as
@@ -238,4 +311,30 @@ func flattenTools(raw json.RawMessage) (json.RawMessage, error) {
 		out = append(out, flat)
 	}
 	return json.Marshal(out)
+}
+
+// textFormat maps response_format to the Responses text.format value. It
+// returns nil for the plain text format, which is the default.
+func textFormat(raw json.RawMessage) (json.RawMessage, error) {
+	var rf struct {
+		Type       string                     `json:"type"`
+		JSONSchema map[string]json.RawMessage `json:"json_schema"`
+	}
+	if err := json.Unmarshal(raw, &rf); err != nil {
+		return nil, &responses.Error{Param: "response_format", Code: "invalid_value", Message: "response_format must be an object"}
+	}
+	switch rf.Type {
+	case "text":
+		return nil, nil
+	case "json_object":
+		return json.RawMessage(`{"type":"json_object"}`), nil
+	case "json_schema":
+		format := map[string]json.RawMessage{"type": json.RawMessage(`"json_schema"`)}
+		for k, v := range rf.JSONSchema {
+			format[k] = v
+		}
+		return json.Marshal(format)
+	}
+	return nil, &responses.Error{Param: "response_format", Code: "invalid_value",
+		Message: fmt.Sprintf("response_format type %q is not supported", rf.Type)}
 }

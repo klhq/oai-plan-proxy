@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"runtime/debug"
 	"time"
 
 	"github.com/klhq/oai-plan-proxy/internal/auth"
@@ -35,6 +36,11 @@ type Env struct {
 	HTTPClient *http.Client
 	// Upstream overrides the API base URL. Tests point it at a fake.
 	Upstream string
+	// Version and Commit are stamped into release builds with -ldflags.
+	Version string
+	Commit  string
+	// BuildInfo reads the Go build information. Nil means debug.ReadBuildInfo.
+	BuildInfo func() (*debug.BuildInfo, bool)
 }
 
 const usage = `usage: oai-plan-proxy <command> [flags]
@@ -47,6 +53,7 @@ commands:
   export   write the stored credentials to a file: export <file>
   import   install exported credentials: import [--force] <file|->
   healthcheck  exit 0 when the running proxy's /healthz answers 200
+  version  print the version and build details
 `
 
 // shutdownTimeout bounds how long serve waits for in-flight requests.
@@ -73,6 +80,8 @@ func Run(ctx context.Context, args []string, env Env) int {
 		return runImport(ctx, args[1:], env)
 	case "healthcheck":
 		return runHealthcheck(ctx, env)
+	case "version", "--version":
+		return runVersion(env)
 	default:
 		fmt.Fprintf(env.Stderr, "unknown command %q\n\n%s", args[0], usage)
 		return 2
@@ -388,12 +397,15 @@ func runServe(ctx context.Context, args []string, env Env) int {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	login := st.State()
+	version, commit := env.build()
 	logger.Info("listening",
 		"addr", ln.Addr().String(),
 		"upstream", env.upstream(),
 		"strict", *strict,
 		"api_key_set", cfg.APIKey != "",
-		"login", string(login))
+		"login", string(login),
+		"version", version,
+		"commit", commit)
 	if login != auth.StateValid {
 		logger.Warn("sign-in needed", "login", string(login), "hint", tokens.SignInHint)
 	}

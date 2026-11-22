@@ -95,7 +95,7 @@ func (p *proxy) keyed(next http.HandlerFunc) http.Handler {
 // notFound answers API routes outside ChatGPT plan usage.
 func notFound(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "invalid_request_error", "unknown_url",
-		r.Method+" "+r.URL.Path+" is not served: ChatGPT plan usage covers only /v1/models and /v1/responses")
+		r.Method+" "+r.URL.Path+" is not served: ChatGPT plan usage covers only /v1/models, /v1/responses, and /v1/chat/completions")
 }
 
 // authorized reports whether r carries the configured API key. With no key

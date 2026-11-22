@@ -56,6 +56,7 @@ func New(opts Options) http.Handler {
 	mux.Handle("GET /v1/models", p.v1(p.listModels))
 	mux.Handle("GET /v1/models/{id}", p.v1(p.getModel))
 	mux.Handle("POST /v1/responses", p.v1(p.responsesHandler))
+	mux.Handle("POST /v1/chat/completions", p.v1(p.chatHandler))
 	mux.Handle("/v1/", p.keyed(notFound))
 	return mux
 }

@@ -19,44 +19,71 @@ const droppedHeader = "x-oai-plan-proxy-dropped-params"
 
 // responsesHandler sanitizes a Responses request and forwards it.
 func (p *proxy) responsesHandler(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
-	if err != nil {
-		writeError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large", err.Error())
+	raw, ok := readBody(w, r)
+	if !ok {
 		return
 	}
 	req, err := responses.Sanitize(raw, p.opts.Strict)
+	if err != nil {
+		writeRequestError(w, err)
+		return
+	}
+	resp, ok := p.sendResponses(w, r, req.Body, req.Dropped)
+	if !ok {
+		return
+	}
+	defer resp.Body.Close()
+	if req.Stream {
+		streamEvents(w, resp.Body)
+		return
+	}
+	writeCompleted(w, resp.Body, func(response []byte) ([]byte, error) { return response, nil })
+}
+
+// readBody reads a bounded request body. When it returns false it has
+// already answered w.
+func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRequestBody))
+	if err != nil {
+		writeError(w, http.StatusRequestEntityTooLarge, "invalid_request_error", "request_too_large", err.Error())
+		return nil, false
+	}
+	return raw, true
+}
+
+// writeRequestError answers a request the proxy will not forward.
+func writeRequestError(w http.ResponseWriter, err error) {
 	var reqErr *responses.Error
 	if errors.As(err, &reqErr) {
 		writeParamError(w, http.StatusBadRequest, "invalid_request_error", reqErr.Code, reqErr.Param, reqErr.Message)
 		return
 	}
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "server_error", "", err.Error())
-		return
+	writeError(w, http.StatusInternalServerError, "server_error", "", err.Error())
+}
+
+// sendResponses names the dropped parameters and posts body to the
+// upstream Responses route. It returns a 2xx answer, or false after it has
+// answered w with the failure.
+func (p *proxy) sendResponses(w http.ResponseWriter, r *http.Request, body []byte, dropped []string) (*http.Response, bool) {
+	if len(dropped) > 0 {
+		w.Header().Set(droppedHeader, strings.Join(dropped, ","))
 	}
-	if len(req.Dropped) > 0 {
-		w.Header().Set(droppedHeader, strings.Join(req.Dropped, ","))
-	}
-	resp, err := p.send(r.Context(), http.MethodPost, "/responses", req.Body)
+	resp, err := p.send(r.Context(), http.MethodPost, "/responses", body)
 	if err != nil {
 		writeSendError(w, err)
-		return
+		return nil, false
 	}
-	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
+		defer resp.Body.Close()
 		writeUpstreamError(w, resp)
-		return
+		return nil, false
 	}
-	if req.Stream {
-		streamEvents(w, resp.Body)
-		return
-	}
-	writeCompleted(w, resp.Body)
+	return resp, true
 }
 
 // writeCompleted answers a non-streaming caller with the response object
-// from the upstream response.completed event.
-func writeCompleted(w http.ResponseWriter, body io.Reader) {
+// from the upstream response.completed event, rewritten by render.
+func writeCompleted(w http.ResponseWriter, body io.Reader, render func(response []byte) ([]byte, error)) {
 	events := responses.NewEventReader(body)
 	for {
 		ev, err := events.Next()
@@ -76,9 +103,15 @@ func writeCompleted(w http.ResponseWriter, body io.Reader) {
 			Response json.RawMessage `json:"response"`
 		}
 		_ = json.Unmarshal(ev.Data, &done)
+		out, err := render(done.Response)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "server_error", "upstream_invalid",
+				"the upstream response could not be read: "+err.Error())
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(done.Response)
+		_, _ = w.Write(out)
 		return
 	}
 }

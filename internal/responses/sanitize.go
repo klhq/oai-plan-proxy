@@ -5,6 +5,7 @@ package responses
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -26,6 +27,11 @@ var previewLimited = []string{
 	"background", "conversation", "max_output_tokens", "max_tool_calls", "metadata",
 	"moderation", "multi_agent", "prompt", "prompt_cache_retention", "safety_identifier",
 	"temperature", "top_logprobs", "top_p", "truncation", "user",
+}
+
+// IsPreviewLimited reports whether Sanitize drops the named parameter.
+func IsPreviewLimited(name string) bool {
+	return slices.Contains(previewLimited, name)
 }
 
 // Sanitize rewrites a caller's /v1/responses body for the plan route. It

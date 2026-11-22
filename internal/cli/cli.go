@@ -49,9 +49,6 @@ commands:
   healthcheck  exit 0 when the running proxy's /healthz answers 200
 `
 
-// signInHint tells the operator how to repair a missing or dead sign-in.
-const signInHint = "run `oai-plan-proxy login`, or `oai-plan-proxy import` with credentials exported elsewhere"
-
 // shutdownTimeout bounds how long serve waits for in-flight requests.
 const shutdownTimeout = 10 * time.Second
 
@@ -355,10 +352,19 @@ func runServe(ctx context.Context, args []string, env Env) int {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
 	}
-	mgr := tokens.New(tokens.Options{Store: st, Client: env.httpClient(), Endpoints: env.endpoints()})
+	mgr := tokens.New(tokens.Options{Store: st, Client: env.httpClient(), Endpoints: env.endpoints(), Logger: logger})
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
-	defer stopRefresh()
-	go mgr.Run(refreshCtx)
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		mgr.Run(refreshCtx)
+	}()
+	// Wait for the refresher on every return, so no refresh or log record
+	// outlives serve.
+	defer func() {
+		stopRefresh()
+		<-refreshDone
+	}()
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -387,7 +393,7 @@ func runServe(ctx context.Context, args []string, env Env) int {
 		"api_key_set", cfg.APIKey != "",
 		"login", string(login))
 	if login != auth.StateValid {
-		logger.Warn("sign-in needed", "login", string(login), "hint", signInHint)
+		logger.Warn("sign-in needed", "login", string(login), "hint", tokens.SignInHint)
 	}
 
 	errc := make(chan error, 1)

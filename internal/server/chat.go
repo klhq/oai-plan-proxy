@@ -35,6 +35,7 @@ func (p *proxy) chatHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	dropped := slices.Concat(tr.Dropped, req.Dropped)
 	slices.Sort(dropped)
+	noteOf(w).stream = &tr.Stream
 	resp, ok := p.sendResponses(w, r, req.Body, dropped)
 	if !ok {
 		return
@@ -53,6 +54,7 @@ func (p *proxy) chatHandler(w http.ResponseWriter, r *http.Request) {
 func streamChat(w http.ResponseWriter, body io.Reader, s *chat.Streamer) {
 	events := responses.NewEventReader(body)
 	flusher, _ := w.(http.Flusher)
+	note := noteOf(w)
 	started := false
 	for {
 		ev, err := events.Next()
@@ -63,6 +65,7 @@ func streamChat(w http.ResponseWriter, body io.Reader, s *chat.Streamer) {
 			}
 			return
 		}
+		note.observe(ev)
 		if f, ok := failure(ev); ok {
 			if !started {
 				writeFailure(w, f)

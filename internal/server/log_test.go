@@ -167,3 +167,122 @@ func TestARequestTheCallerAbandonsIsLoggedAsCanceled(t *testing.T) {
 		t.Fatalf("request record = %v, want canceled=true", rec)
 	}
 }
+
+func TestAResponsesRequestLogsItsModelAndStreamMode(t *testing.T) {
+	for _, tc := range []struct {
+		body   string
+		stream bool
+	}{
+		{`{"model":"gpt-5","input":"hi"}`, false},
+		{`{"model":"gpt-5","input":"hi","stream":true}`, true},
+	} {
+		u := sseUpstream(t, evCreated, evDelta, evCompleted)
+		h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+		post(t, h, "/v1/responses", tc.body)
+
+		rec := oneRequestRecord(t, logs)
+		if rec["model"] != "gpt-5" || rec["stream"] != tc.stream {
+			t.Errorf("%s: request record = %v", tc.body, rec)
+		}
+	}
+}
+
+func TestAChatRequestLogsItsModelAndStreamMode(t *testing.T) {
+	u := sseUpstream(t, evCreated, evDelta, evCompleted)
+	h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+	post(t, h, "/v1/chat/completions", `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+
+	rec := oneRequestRecord(t, logs)
+	if rec["model"] != "gpt-5" || rec["stream"] != true {
+		t.Fatalf("request record = %v", rec)
+	}
+}
+
+func TestARequestLogsTheParametersItDropped(t *testing.T) {
+	u := sseUpstream(t, evCreated, evDelta, evCompleted)
+	h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+	post(t, h, "/v1/chat/completions", `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"seed":1,"stop":"x"}`)
+
+	rec := oneRequestRecord(t, logs)
+	dropped, _ := rec["dropped"].([]any)
+	if len(dropped) != 2 || dropped[0] != "seed" || dropped[1] != "stop" {
+		t.Fatalf("request record = %v, want dropped [seed stop]", rec)
+	}
+}
+
+const evCompletedWithUsage = `{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"Hello"}]}],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15,"input_tokens_details":{"cached_tokens":3}}}}`
+
+func TestACompletedResponseLogsItsTokenUsage(t *testing.T) {
+	for _, tc := range []struct{ path, body string }{
+		{"/v1/responses", `{"model":"gpt-5","input":"hi"}`},
+		{"/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`},
+		{"/v1/chat/completions", `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}]}`},
+		{"/v1/chat/completions", `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`},
+	} {
+		u := sseUpstream(t, evCreated, evDelta, evCompletedWithUsage)
+		h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+		post(t, h, tc.path, tc.body)
+
+		rec := oneRequestRecord(t, logs)
+		if rec["input_tokens"] != float64(10) || rec["output_tokens"] != float64(5) || rec["cached_tokens"] != float64(3) {
+			t.Errorf("%s %s: request record = %v", tc.path, tc.body, rec)
+		}
+	}
+}
+
+func TestAnUpstreamErrorLogsItsStatusAndCode(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"code":"invalid_value","message":"bad"}}`))
+	})
+	h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+	post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi"}`)
+
+	rec := oneRequestRecord(t, logs)
+	if rec["status"] != float64(400) || rec["upstream_status"] != float64(400) || rec["error_code"] != "invalid_value" {
+		t.Fatalf("request record = %v", rec)
+	}
+}
+
+func TestTheUsageLimitIsLoggedAsAWarningWithItsCode(t *testing.T) {
+	httpLimit := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"` + usageLimit + `","message":"Plan usage limit reached."}}`))
+	})
+	eventLimit := sseUpstream(t, evCreated, `{"type":"error","code":"`+usageLimit+`","message":"Plan usage limit reached."}`)
+	for name, u := range map[string]*fakeUpstream{"http": httpLimit, "event": eventLimit} {
+		h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+		post(t, h, "/v1/chat/completions", `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+
+		rec := oneRequestRecord(t, logs)
+		if rec["level"] != "WARN" || rec["status"] != float64(429) || rec["error_code"] != usageLimit {
+			t.Errorf("%s: request record = %v", name, rec)
+		}
+	}
+}
+
+func TestAFailureAfterOutputStartedIsLoggedAsAStreamError(t *testing.T) {
+	for _, tc := range []struct{ path, body string }{
+		{"/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`},
+		{"/v1/chat/completions", `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`},
+	} {
+		u := sseUpstream(t, evCreated, evDelta, evFailed)
+		h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+		post(t, h, tc.path, tc.body)
+
+		rec := oneRequestRecord(t, logs)
+		if rec["level"] != "WARN" || rec["status"] != float64(200) ||
+			rec["error_code"] != "server_error" || rec["stream_error"] != true {
+			t.Errorf("%s: request record = %v", tc.path, rec)
+		}
+	}
+}

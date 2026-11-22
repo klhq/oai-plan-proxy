@@ -1,11 +1,14 @@
 package oauth
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
 
@@ -17,6 +20,10 @@ type LoginOptions struct {
 	// Out receives the authorization URL and instructions.
 	Out    io.Writer
 	Client *http.Client
+	// In, when set, is read for a pasted callback URL while Login waits.
+	In io.Reader
+	// Err receives the reasons a pasted line was rejected. Nil discards them.
+	Err io.Writer
 }
 
 // Login runs one interactive sign-in. It listens on 127.0.0.1 only, prints
@@ -67,8 +74,39 @@ func Login(ctx context.Context, opts LoginOptions) (Result, error) {
 		}
 	}()
 
+	// finished stops the paste reader once Login returns, so a line pasted
+	// after the sign-in completed never spends the code a second time.
+	finished := make(chan struct{})
+	defer close(finished)
+	if opts.In != nil {
+		errOut := opts.Err
+		if errOut == nil {
+			errOut = io.Discard
+		}
+		go readPasted(opts.In, errOut, finished, func(callback url.Values) {
+			// A wrong state is a paste from another sign-in. Nothing was
+			// spent, so the operator can paste again.
+			if err := flow.checkState(callback); err != nil {
+				fmt.Fprintln(errOut, err)
+				return
+			}
+			res, err := flow.Exchange(ctx, callback, opts.Client)
+			select {
+			case done <- outcome{res, err}:
+			default:
+			}
+		})
+	}
+
 	fmt.Fprintf(opts.Out, "Open this URL in a browser to sign in:\n\n%s\n\n", flow.URL)
-	fmt.Fprintf(opts.Out, "Waiting for the callback on 127.0.0.1:%d. On a remote host, forward it first:\n", p.Port)
+	fmt.Fprintf(opts.Out, "Waiting for the callback on 127.0.0.1:%d.\n", p.Port)
+	if opts.In != nil {
+		fmt.Fprintln(opts.Out, "If the browser runs on another machine, its last page will not load.")
+		fmt.Fprintln(opts.Out, "Copy the full address from its address bar and paste it here.")
+		fmt.Fprintln(opts.Out, "Or forward the callback port before you open the URL:")
+	} else {
+		fmt.Fprintln(opts.Out, "On a remote host, forward the callback port first:")
+	}
 	fmt.Fprintf(opts.Out, "  ssh -L %d:127.0.0.1:%d <this host>\n", p.Port, p.Port)
 
 	select {
@@ -82,3 +120,27 @@ func Login(ctx context.Context, opts LoginOptions) (Result, error) {
 // callbackShutdownTimeout bounds how long Login waits for the callback page
 // to reach the browser.
 const callbackShutdownTimeout = 5 * time.Second
+
+// readPasted reads lines from in until it ends and hands each pasted
+// callback URL's query to complete, until finished closes.
+func readPasted(in io.Reader, errOut io.Writer, finished <-chan struct{}, complete func(url.Values)) {
+	sc := bufio.NewScanner(in)
+	for sc.Scan() {
+		select {
+		case <-finished:
+			// Keep draining, so a writer never blocks, but act on nothing.
+			continue
+		default:
+		}
+		u, err := url.Parse(strings.TrimSpace(sc.Text()))
+		if err != nil || !u.Query().Has("state") {
+			// The line is not echoed: it may hold part of a code.
+			fmt.Fprintln(errOut, pasteHint)
+			continue
+		}
+		complete(u.Query())
+	}
+}
+
+// pasteHint tells the operator what to paste after a rejected line.
+const pasteHint = "That is not the callback address. Copy the browser's address bar after approving, then paste the full address here."

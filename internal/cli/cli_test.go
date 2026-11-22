@@ -223,6 +223,8 @@ type harness struct {
 	// stdoutTap also receives stdout, so a test can read it while a command
 	// is still running.
 	stdoutTap io.Writer
+	// stdin is the command's standard input. Nil means none.
+	stdin io.Reader
 }
 
 // syncBuffer is a bytes.Buffer safe for a command goroutine and a test.
@@ -265,6 +267,7 @@ func (h *harness) env() cli.Env {
 		h.upstream = offline.Resource
 	}
 	return cli.Env{
+		Stdin:  h.stdin,
 		Stdout: h.out(),
 		Stderr: &h.stderr,
 		Getenv: func(k string) string { return h.vars[k] },

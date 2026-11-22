@@ -141,6 +141,8 @@ func runLogin(ctx context.Context, args []string, env Env) int {
 		Params:    oauth.Params{ClientID: clientID, HostID: hostID, AgentName: agentName, Port: *port},
 		Out:       env.Stdout,
 		Client:    env.httpClient(),
+		In:        env.Stdin,
+		Err:       env.Stderr,
 	})
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)

@@ -99,7 +99,14 @@ func Login(ctx context.Context, opts LoginOptions) (Result, error) {
 	}
 
 	fmt.Fprintf(opts.Out, "Open this URL in a browser to sign in:\n\n%s\n\n", flow.URL)
-	fmt.Fprintf(opts.Out, "Waiting for the callback on 127.0.0.1:%d. On a remote host, forward it first:\n", p.Port)
+	fmt.Fprintf(opts.Out, "Waiting for the callback on 127.0.0.1:%d.\n", p.Port)
+	if opts.In != nil {
+		fmt.Fprintln(opts.Out, "If the browser runs on another machine, its last page will not load.")
+		fmt.Fprintln(opts.Out, "Copy the full address from its address bar and paste it here.")
+		fmt.Fprintln(opts.Out, "Or forward the callback port before you open the URL:")
+	} else {
+		fmt.Fprintln(opts.Out, "On a remote host, forward the callback port first:")
+	}
 	fmt.Fprintf(opts.Out, "  ssh -L %d:127.0.0.1:%d <this host>\n", p.Port, p.Port)
 
 	select {

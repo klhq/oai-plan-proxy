@@ -16,13 +16,16 @@ type Config struct {
 	Listen  string
 	DataDir string
 	APIKey  string
+	// LogFormat selects the serve log handler: text or json.
+	LogFormat string
 }
 
 // Environment variable names.
 const (
-	EnvListen  = "OAI_PLAN_PROXY_LISTEN"
-	EnvDataDir = "OAI_PLAN_PROXY_DATA_DIR"
-	EnvAPIKey  = "OAI_PLAN_PROXY_API_KEY"
+	EnvListen    = "OAI_PLAN_PROXY_LISTEN"
+	EnvDataDir   = "OAI_PLAN_PROXY_DATA_DIR"
+	EnvAPIKey    = "OAI_PLAN_PROXY_API_KEY"
+	EnvLogFormat = "OAI_PLAN_PROXY_LOG_FORMAT"
 )
 
 // Load reads settings through getenv. userConfigDir supplies the base
@@ -31,9 +34,10 @@ const (
 // user config directory.
 func Load(getenv func(string) string, userConfigDir func() (string, error)) (Config, error) {
 	cfg := Config{
-		Listen:  getenv(EnvListen),
-		DataDir: getenv(EnvDataDir),
-		APIKey:  getenv(EnvAPIKey),
+		Listen:    getenv(EnvListen),
+		DataDir:   getenv(EnvDataDir),
+		APIKey:    getenv(EnvAPIKey),
+		LogFormat: getenv(EnvLogFormat),
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = defaultListen

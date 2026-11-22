@@ -28,6 +28,7 @@ func (p *proxy) responsesHandler(w http.ResponseWriter, r *http.Request) {
 		writeRequestError(w, err)
 		return
 	}
+	noteOf(w).stream = &req.Stream
 	resp, ok := p.sendResponses(w, r, req.Body, req.Dropped)
 	if !ok {
 		return
@@ -68,6 +69,13 @@ func (p *proxy) sendResponses(w http.ResponseWriter, r *http.Request, body []byt
 	if len(dropped) > 0 {
 		w.Header().Set(droppedHeader, strings.Join(dropped, ","))
 	}
+	var sent struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(body, &sent)
+	note := noteOf(w)
+	note.model = sent.Model
+	note.dropped = dropped
 	resp, err := p.send(r.Context(), http.MethodPost, "/responses", body)
 	if err != nil {
 		writeSendError(w, err)
@@ -85,6 +93,7 @@ func (p *proxy) sendResponses(w http.ResponseWriter, r *http.Request, body []byt
 // from the upstream response.completed event, rewritten by render.
 func writeCompleted(w http.ResponseWriter, body io.Reader, render func(response []byte) ([]byte, error)) {
 	events := responses.NewEventReader(body)
+	note := noteOf(w)
 	for {
 		ev, err := events.Next()
 		if err != nil {
@@ -92,6 +101,7 @@ func writeCompleted(w http.ResponseWriter, body io.Reader, render func(response 
 				"the upstream stream ended before response.completed")
 			return
 		}
+		note.observe(ev)
 		if f, ok := failure(ev); ok {
 			writeFailure(w, f)
 			return
@@ -130,7 +140,11 @@ func writeUpstreamError(w http.ResponseWriter, resp *http.Response) {
 	var e struct {
 		Error upstreamFailure `json:"error"`
 	}
-	if json.Unmarshal(body, &e) == nil && e.Error.Code == usageLimitCode {
+	parsed := json.Unmarshal(body, &e) == nil
+	note := noteOf(w)
+	note.upstreamStatus = resp.StatusCode
+	note.errorCode = e.Error.Code
+	if parsed && e.Error.Code == usageLimitCode {
 		writeUsageLimit(w, e.Error.Message)
 		return
 	}
@@ -164,6 +178,7 @@ var preOutput = map[string]bool{
 // after each one.
 func streamEvents(w http.ResponseWriter, body io.Reader) {
 	events := responses.NewEventReader(body)
+	note := noteOf(w)
 	var held [][]byte
 	for {
 		ev, err := events.Next()
@@ -172,6 +187,7 @@ func streamEvents(w http.ResponseWriter, body io.Reader) {
 				"the upstream stream ended before any output")
 			return
 		}
+		note.observe(ev)
 		if f, ok := failure(ev); ok {
 			writeFailure(w, f)
 			return
@@ -201,6 +217,7 @@ func streamEvents(w http.ResponseWriter, body io.Reader) {
 		if err != nil {
 			return
 		}
+		note.observe(ev)
 		if _, err := w.Write(ev.Raw); err != nil {
 			return
 		}

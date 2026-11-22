@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -341,15 +342,29 @@ func runServe(ctx context.Context, args []string, env Env) int {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
 	}
+	logger, err := newLogger(cfg.LogFormat, env.Stderr)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
 	st, err := store.Open(cfg.DataDir)
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
 	}
-	mgr := tokens.New(tokens.Options{Store: st, Client: env.httpClient(), Endpoints: env.endpoints()})
+	mgr := tokens.New(tokens.Options{Store: st, Client: env.httpClient(), Endpoints: env.endpoints(), Logger: logger})
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
-	defer stopRefresh()
-	go mgr.Run(refreshCtx)
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		mgr.Run(refreshCtx)
+	}()
+	// Wait for the refresher on every return, so no refresh or log record
+	// outlives serve.
+	defer func() {
+		stopRefresh()
+		<-refreshDone
+	}()
 
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
@@ -366,10 +381,20 @@ func runServe(ctx context.Context, args []string, env Env) int {
 			Client: &http.Client{Transport: env.httpClient().Transport},
 			APIKey: cfg.APIKey,
 			Strict: *strict,
+			Logger: logger,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
-	fmt.Fprintf(env.Stderr, "listening on %s\n", ln.Addr())
+	login := st.State()
+	logger.Info("listening",
+		"addr", ln.Addr().String(),
+		"upstream", env.upstream(),
+		"strict", *strict,
+		"api_key_set", cfg.APIKey != "",
+		"login", string(login))
+	if login != auth.StateValid {
+		logger.Warn("sign-in needed", "login", string(login), "hint", tokens.SignInHint)
+	}
 
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(ln) }()
@@ -420,4 +445,17 @@ func runHealthcheck(ctx context.Context, env Env) int {
 		return 1
 	}
 	return 0
+}
+
+// newLogger returns the serve logger for format, writing to w. An empty
+// format means text.
+func newLogger(format string, w io.Writer) (*slog.Logger, error) {
+	switch format {
+	case "", "text":
+		return slog.New(slog.NewTextHandler(w, nil)), nil
+	case "json":
+		return slog.New(slog.NewJSONHandler(w, nil)), nil
+	default:
+		return nil, fmt.Errorf("%s must be text or json, not %q", config.EnvLogFormat, format)
+	}
 }

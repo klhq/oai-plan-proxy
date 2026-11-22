@@ -4,6 +4,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/klhq/oai-plan-proxy/internal/auth"
@@ -36,6 +37,8 @@ type Options struct {
 	// Strict rejects preview-limited parameters with 400 instead of
 	// dropping them.
 	Strict bool
+	// Logger receives one record per request. Nil discards them.
+	Logger *slog.Logger
 }
 
 // New returns the proxy's HTTP handler.
@@ -58,7 +61,7 @@ func New(opts Options) http.Handler {
 	mux.Handle("POST /v1/responses", p.v1(p.responsesHandler))
 	mux.Handle("POST /v1/chat/completions", p.v1(p.chatHandler))
 	mux.Handle("/v1/", p.keyed(notFound))
-	return mux
+	return logRequests(opts.Logger, mux)
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {

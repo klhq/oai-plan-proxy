@@ -134,6 +134,7 @@ OAI_PLAN_PROXY_API_KEY=change-me oai-plan-proxy serve
 | `OAI_PLAN_PROXY_LISTEN` | Listen address | `127.0.0.1:18080` |
 | `OAI_PLAN_PROXY_DATA_DIR` | Holds `credentials.json` and `host_id` | `os.UserConfigDir()/oai-plan-proxy` |
 | `OAI_PLAN_PROXY_API_KEY` | Bearer key every `/v1` request must carry | unset (no check) |
+| `OAI_PLAN_PROXY_LOG_FORMAT` | `text` or `json` log records on standard error | `text` |
 
 Set `OAI_PLAN_PROXY_API_KEY` whenever the listener is reachable by anything
 other than you. Clients send it as `Authorization: Bearer <key>`.
@@ -146,6 +147,31 @@ processes on one data directory from refreshing at once.
 `GET /healthz` answers 200 with `{"status":"ok","login":"valid"}` while the
 sign-in works, and 503 with `"login":"missing"` or `"login":"dead"`
 otherwise. It needs no API key. Point your container healthcheck at it.
+
+### Logs
+
+`serve` writes `log/slog` records to standard error. Set
+`OAI_PLAN_PROXY_LOG_FORMAT=json` when a log collector reads them.
+
+| `msg` | Level | Attributes |
+|---|---|---|
+| `listening` | info | `addr`, `upstream`, `strict`, `api_key_set`, `login` |
+| `sign-in needed` | warn | `login`, `hint`; at startup when the sign-in is missing or dead |
+| `request` | info, or warn for a status of 500 or more, a usage limit, or a stream error | see below |
+| `token refreshed` | info | `reason` (`scheduled`, `expired`, `upstream_401`), `expires_at` |
+| `token refresh failed` | warn | `reason`, `error`; the sign-in is kept and retried |
+| `sign-in dead` | error | `reason`, `error`, `hint`; logged once, then sign in again |
+
+Each request record carries `method`, `path`, `status`, and `duration_ms`.
+For `/v1/responses` and `/v1/chat/completions` it adds `model`, `stream`,
+and `dropped` when parameters were removed. A completed response adds
+`input_tokens`, `output_tokens`, and `cached_tokens`. An upstream error adds
+`upstream_status` and `error_code`. A failure after output started adds
+`stream_error=true`, and a caller that hung up adds `canceled=true`. A
+`/healthz` probe that answers 200 is not logged.
+
+No record carries a token, the `Authorization` header, the API key, the
+account email or ID, or any request or response content.
 
 ## Routes
 

@@ -134,7 +134,7 @@ func (s *Store) HostID() (string, error) {
 	if _, err := rand.Read(raw); err != nil {
 		return "", fmt.Errorf("generate host id: %w", err)
 	}
-	tmp, err := writeTemp(s.dir, hostIDFile, []byte(hex.EncodeToString(raw)+"\n"))
+	tmp, err := writeTemp(s.dir, hostIDFile, []byte(uuidURN(raw)+"\n"))
 	if err != nil {
 		return "", err
 	}
@@ -145,6 +145,15 @@ func (s *Store) HostID() (string, error) {
 		return "", fmt.Errorf("save host id: %w", err)
 	}
 	return readHostID(path)
+}
+
+// uuidURN formats 16 random bytes as a version 4 UUID URN, the shape OpenAI
+// accepts for ext_agent_host_id.
+func uuidURN(raw []byte) string {
+	raw[6] = raw[6]&0x0f | 0x40
+	raw[8] = raw[8]&0x3f | 0x80
+	h := hex.EncodeToString(raw)
+	return "urn:uuid:" + h[0:8] + "-" + h[8:12] + "-" + h[12:16] + "-" + h[16:20] + "-" + h[20:32]
 }
 
 func readHostID(path string) (string, error) {

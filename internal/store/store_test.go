@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 	"time"
 
@@ -226,6 +227,24 @@ func TestHostIDIsCreatedOnceAndReused(t *testing.T) {
 	}
 	if again != id {
 		t.Fatalf("host id changed from %q to %q", id, again)
+	}
+}
+
+// OpenAI rejects other shapes with invalid_authorize_request on
+// ext_agent_host_id. The shape follows the stored-credential example in the
+// sign-in docs and the reference implementation.
+var hostIDShape = regexp.MustCompile(`^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+
+func TestHostIDIsAVersion4UUIDURN(t *testing.T) {
+	s, _ := openStore(t)
+
+	id, err := s.HostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !hostIDShape.MatchString(id) {
+		t.Fatalf("host id %q is not urn:uuid:<version 4 uuid>", id)
 	}
 }
 

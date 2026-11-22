@@ -39,7 +39,8 @@ jobs:
             name="oai-plan-proxy_${VERSION}_${os}_${arch}"
             mkdir "dist/$name"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-              go build -trimpath -ldflags "-s -w" -o "dist/$name/oai-plan-proxy" ./cmd/oai-plan-proxy
+              go build -trimpath -ldflags "-s -w -X main.version=$VERSION -X main.commit=${GITHUB_SHA::12}" \
+              -o "dist/$name/oai-plan-proxy" ./cmd/oai-plan-proxy
             cp LICENSE README.md "dist/$name/"
             tar -C dist -czf "dist/$name.tar.gz" "$name"
             rm -r "dist/$name"
@@ -69,9 +70,14 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ github.sha }}
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
             ghcr.io/${{ github.repository }}:latest
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.licenses=MIT
+            org.opencontainers.image.version=${{ github.ref_name }}
+            org.opencontainers.image.revision=${{ github.sha }}

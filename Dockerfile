@@ -2,12 +2,16 @@
 
 FROM --platform=$BUILDPLATFORM golang:1.27 AS build
 ARG TARGETOS TARGETARCH
+# Release builds pass the tag and commit. Local builds report "(devel)".
+ARG VERSION COMMIT
 WORKDIR /src
 COPY go.mod ./
 COPY cmd ./cmd
 COPY internal ./internal
 RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
-    go build -trimpath -ldflags "-s -w" -o /out/oai-plan-proxy ./cmd/oai-plan-proxy
+    go build -trimpath \
+      -ldflags "-s -w -X main.version=${VERSION} -X main.commit=$(echo "${COMMIT}" | cut -c1-12)" \
+      -o /out/oai-plan-proxy ./cmd/oai-plan-proxy
 # The data directory must belong to the nonroot user before a named volume
 # is created from it, so the proxy can write credentials.json.
 RUN mkdir -p /out/data && chown 65532:65532 /out/data && chmod 0700 /out/data

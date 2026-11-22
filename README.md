@@ -12,16 +12,47 @@ keeps the sign-in alive, and serves `/v1/models`, `/v1/responses`, and
 
 ## Requirements
 
-- Go 1.27 or later.
 - Linux or macOS. The credential lock uses `flock(2)`, so Windows is not
   supported.
 - A ChatGPT plan that offers plan usage to open-source tools.
 
 ## Install
 
+Pick one of three ways. Each release on the
+[releases page](https://github.com/klhq/oai-plan-proxy/releases) has
+binaries for Linux and macOS on amd64 and arm64, a `checksums.txt`, and a
+multi-arch container image.
+
+**Binary.** Download the archive for your platform and check it against
+`checksums.txt` before you extract it:
+
+```bash
+VERSION=v0.1.2
+PLATFORM=linux_amd64   # or linux_arm64, darwin_amd64, darwin_arm64
+BASE=https://github.com/klhq/oai-plan-proxy/releases/download/$VERSION
+curl -fsSLO "$BASE/oai-plan-proxy_${VERSION}_${PLATFORM}.tar.gz"
+curl -fsSLO "$BASE/checksums.txt"
+sha256sum --check --ignore-missing checksums.txt   # macOS: shasum -a 256 --check --ignore-missing checksums.txt
+tar -xzf "oai-plan-proxy_${VERSION}_${PLATFORM}.tar.gz"
+sudo install "oai-plan-proxy_${VERSION}_${PLATFORM}/oai-plan-proxy" /usr/local/bin/
+```
+
+**Container.** `ghcr.io/klhq/oai-plan-proxy`, tagged with each release and
+`latest`. See [Container](#container).
+
+**From source.** With Go 1.27 or later:
+
 ```bash
 go install github.com/klhq/oai-plan-proxy/cmd/oai-plan-proxy@latest
 ```
+
+Check what you installed:
+
+```bash
+oai-plan-proxy version
+```
+
+Include this line when you report a bug.
 
 ## Sign in
 
@@ -171,7 +202,7 @@ otherwise. It needs no API key. Point your container healthcheck at it.
 
 | `msg` | Level | Attributes |
 |---|---|---|
-| `listening` | info | `addr`, `upstream`, `strict`, `api_key_set`, `login` |
+| `listening` | info | `addr`, `upstream`, `strict`, `api_key_set`, `login`, `version`, `commit` |
 | `sign-in needed` | warn | `login`, `hint`; at startup when the sign-in is missing or dead |
 | `request` | info, or warn for a status of 500 or more, a usage limit, or a stream error | see below |
 | `token refreshed` | info | `reason` (`scheduled`, `expired`, `upstream_401`), `expires_at` |

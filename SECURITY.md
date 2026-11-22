@@ -13,7 +13,7 @@ Do not open a public issue for a vulnerability.
 
 Include the output of `oai-plan-proxy version`, what an attacker can do, and
 the steps to reproduce it. Do not include your `credentials.json`, an export
-file, or any token.
+file, or any token. You get a first answer within one week.
 
 ## What the proxy protects
 

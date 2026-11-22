@@ -57,7 +57,15 @@ func Login(ctx context.Context, opts LoginOptions) (Result, error) {
 	})
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	go func() { _ = srv.Serve(ln) }()
-	defer srv.Close()
+	// Shutdown, not Close: the callback handler reports its outcome before
+	// it returns, and Close would cut the browser's page off mid-response.
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), callbackShutdownTimeout)
+		defer cancel()
+		if srv.Shutdown(shutdownCtx) != nil {
+			_ = srv.Close()
+		}
+	}()
 
 	fmt.Fprintf(opts.Out, "Open this URL in a browser to sign in:\n\n%s\n\n", flow.URL)
 	fmt.Fprintf(opts.Out, "Waiting for the callback on 127.0.0.1:%d. On a remote host, forward it first:\n", p.Port)
@@ -70,3 +78,7 @@ func Login(ctx context.Context, opts LoginOptions) (Result, error) {
 		return Result{}, fmt.Errorf("sign-in cancelled: %w", ctx.Err())
 	}
 }
+
+// callbackShutdownTimeout bounds how long Login waits for the callback page
+// to reach the browser.
+const callbackShutdownTimeout = 5 * time.Second

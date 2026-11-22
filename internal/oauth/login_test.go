@@ -129,3 +129,53 @@ func TestLoginCompletesWhenTheBrowserReturnsToTheLoopbackCallback(t *testing.T) 
 		t.Fatalf("browser page status = %d, want 200", resp.StatusCode)
 	}
 }
+
+// TestTheBrowserAlwaysGetsTheSignedInPage repeats the sign-in because the
+// failure it guards against is a race: Login returning, and closing the
+// callback server, before the page reached the browser. One attempt shows
+// it about one time in sixty.
+func TestTheBrowserAlwaysGetsTheSignedInPage(t *testing.T) {
+	const attempts = 200
+	for i := range attempts {
+		var authURL string
+		tokens := newFakeTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+			claims := map[string]any{
+				"iss": testEndpoints.Issuer, "aud": "oaiapp_issued", "sub": "user-sub-1",
+				"email": "user@example.com", "nonce": query(t, authURL).Get("nonce"),
+				"exp": time.Now().Add(time.Hour).Unix(),
+			}
+			writeTokens(w, unsignedJWT(t, claims))
+		})
+		out := newURLCatcher(t)
+		p := firstRegistration()
+		p.Port = 0
+		done := make(chan error, 1)
+		go func() {
+			_, err := oauth.Login(context.Background(), oauth.LoginOptions{
+				Endpoints: tokens.endpoints(), Params: p, Out: out.w, Client: tokens.Client(),
+			})
+			done <- err
+		}()
+		authURL = out.next(t)
+		q := query(t, authURL)
+		browser := q.Get("redirect_uri") + "?" + url.Values{
+			"code": {"code-1"}, "state": {q.Get("state")}, "client_id": {"oaiapp_issued"},
+		}.Encode()
+
+		resp, err := http.Get(browser)
+		var page []byte
+		if err == nil {
+			page, err = io.ReadAll(resp.Body)
+			resp.Body.Close()
+		}
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("Login did not return after the callback")
+		}
+		if err != nil || !strings.Contains(string(page), "Signed in.") {
+			t.Fatalf("attempt %d: page = %q, err = %v; want the signed-in page", i+1, page, err)
+		}
+	}
+}

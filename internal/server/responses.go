@@ -81,6 +81,7 @@ func (p *proxy) sendResponses(w http.ResponseWriter, r *http.Request, body []byt
 		writeSendError(w, err)
 		return nil, false
 	}
+	note.plan = usageWindows(resp.Header)
 	if resp.StatusCode/100 != 2 {
 		defer resp.Body.Close()
 		writeUpstreamError(w, resp)

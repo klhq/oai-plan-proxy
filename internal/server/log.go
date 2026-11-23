@@ -17,6 +17,8 @@ type requestNote struct {
 	stream  *bool
 	dropped []string
 	usage   *tokenUsage
+	// plan holds the plan usage windows upstream reported.
+	plan []usageWindow
 	// upstreamStatus is the HTTP status of an upstream error answer.
 	upstreamStatus int
 	errorCode      string
@@ -76,6 +78,9 @@ func (n *requestNote) attrs() []any {
 			"input_tokens", n.usage.InputTokens,
 			"output_tokens", n.usage.OutputTokens,
 			"cached_tokens", n.usage.InputTokensDetails.CachedTokens)
+	}
+	for _, w := range n.plan {
+		a = append(a, w.attrs()...)
 	}
 	return a
 }

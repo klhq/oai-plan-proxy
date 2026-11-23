@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # New advisories land without a code change, so check main every week too.
+  schedule:
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: read
@@ -26,3 +29,14 @@ jobs:
           fi
       - run: go vet ./...
       - run: go test -race -timeout 90s ./...
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+      # Reports only vulnerabilities in code the binary can reach, including
+      # the standard library of the Go version in go.mod.
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.10.0 ./...

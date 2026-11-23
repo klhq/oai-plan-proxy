@@ -3,6 +3,8 @@ package config
 
 import (
 	"fmt"
+	"net"
+	"net/netip"
 	"path/filepath"
 )
 
@@ -26,6 +28,10 @@ const (
 	EnvDataDir   = "OAI_PLAN_PROXY_DATA_DIR"
 	EnvAPIKey    = "OAI_PLAN_PROXY_API_KEY"
 	EnvLogFormat = "OAI_PLAN_PROXY_LOG_FORMAT"
+	// EnvAPIKeyFile names a file that holds the API key.
+	EnvAPIKeyFile = "OAI_PLAN_PROXY_API_KEY_FILE"
+	// EnvAllowNoKey set to 1 lets serve run without a key on any address.
+	EnvAllowNoKey = "OAI_PLAN_PROXY_ALLOW_NO_KEY"
 )
 
 // Load reads settings through getenv. userConfigDir supplies the base
@@ -50,4 +56,19 @@ func Load(getenv func(string) string, userConfigDir func() (string, error)) (Con
 		cfg.DataDir = filepath.Join(base, appDirName)
 	}
 	return cfg, nil
+}
+
+// Loopback reports whether the listen address only accepts connections
+// from this host: localhost, an IPv4 address in 127.0.0.0/8, or ::1. An
+// empty host, a wildcard, and any other name are not loopback.
+func Loopback(listen string) bool {
+	host, _, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip, err := netip.ParseAddr(host)
+	return err == nil && ip.IsLoopback()
 }

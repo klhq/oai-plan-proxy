@@ -50,3 +50,22 @@ func TestLoadReadsEnvironmentOverrides(t *testing.T) {
 		t.Fatalf("cfg = %+v, want %+v", cfg, want)
 	}
 }
+
+func TestOnlyLoopbackListenAddressesCountAsLocal(t *testing.T) {
+	for listen, want := range map[string]bool{
+		"127.0.0.1:18080":   true,
+		"127.0.0.2:18080":   true,
+		"localhost:18080":   true,
+		"[::1]:18080":       true,
+		"0.0.0.0:18080":     false,
+		":18080":            false,
+		"[::]:18080":        false,
+		"192.168.1.5:18080": false,
+		"proxy.lan:18080":   false,
+		"not an address":    false,
+	} {
+		if got := config.Loopback(listen); got != want {
+			t.Errorf("Loopback(%q) = %v, want %v", listen, got, want)
+		}
+	}
+}

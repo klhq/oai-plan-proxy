@@ -182,6 +182,7 @@ var preOutput = map[string]bool{
 	"response.created":     true,
 	"response.in_progress": true,
 	"response.queued":      true,
+	"response.metadata":    true,
 }
 
 // streamEvents forwards upstream events to a streaming caller, flushing

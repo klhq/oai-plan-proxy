@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"os"
 	"path/filepath"
+	"strings"
 )
 
 const (
@@ -47,6 +49,13 @@ func Load(getenv func(string) string, userConfigDir func() (string, error)) (Con
 		APIKey:    getenv(EnvAPIKey),
 		LogFormat: getenv(EnvLogFormat),
 	}
+	if path := getenv(EnvAPIKeyFile); path != "" {
+		key, err := readKeyFile(path, cfg.APIKey != "")
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.APIKey = key
+	}
 	switch v := getenv(EnvAllowNoKey); v {
 	case "":
 	case "1":
@@ -80,4 +89,21 @@ func Loopback(listen string) bool {
 	}
 	ip, err := netip.ParseAddr(host)
 	return err == nil && ip.IsLoopback()
+}
+
+// readKeyFile reads the API key from path. Its errors name the variable
+// and never quote the file's content.
+func readKeyFile(path string, keySet bool) (string, error) {
+	if keySet {
+		return "", fmt.Errorf("set %s or %s, not both", EnvAPIKey, EnvAPIKeyFile)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", EnvAPIKeyFile, err)
+	}
+	key := strings.TrimSpace(string(raw))
+	if key == "" {
+		return "", fmt.Errorf("%s: %s is empty", EnvAPIKeyFile, path)
+	}
+	return key, nil
 }

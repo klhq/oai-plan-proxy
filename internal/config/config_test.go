@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -82,6 +83,44 @@ func TestAllowNoKeyAcceptsOnlyOne(t *testing.T) {
 		_, err := config.Load(env(map[string]string{config.EnvDataDir: t.TempDir(), config.EnvAllowNoKey: value}), nil)
 		if err == nil || !strings.Contains(err.Error(), config.EnvAllowNoKey) {
 			t.Errorf("%q: err = %v, want an error naming %s", value, err, config.EnvAllowNoKey)
+		}
+	}
+}
+
+// keyFile writes content to a new file and returns its path.
+func keyFile(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "api-key")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestTheAPIKeyCanComeFromAFile(t *testing.T) {
+	path := keyFile(t, "  file-key-123\n")
+
+	cfg, err := config.Load(env(map[string]string{config.EnvDataDir: t.TempDir(), config.EnvAPIKeyFile: path}), nil)
+
+	if err != nil || cfg.APIKey != "file-key-123" {
+		t.Fatalf("APIKey = %q, err = %v; want file-key-123", cfg.APIKey, err)
+	}
+}
+
+func TestABadAPIKeyFileIsAConfigErrorThatHidesTheKey(t *testing.T) {
+	secret := "file-key-123"
+	for name, vars := range map[string]map[string]string{
+		"both set":    {config.EnvAPIKey: "env-key", config.EnvAPIKeyFile: keyFile(t, secret)},
+		"missing":     {config.EnvAPIKeyFile: filepath.Join(t.TempDir(), "absent")},
+		"blank":       {config.EnvAPIKeyFile: keyFile(t, " \n\t")},
+		"a directory": {config.EnvAPIKeyFile: t.TempDir()},
+	} {
+		vars[config.EnvDataDir] = t.TempDir()
+
+		_, err := config.Load(env(vars), nil)
+
+		if err == nil || !strings.Contains(err.Error(), config.EnvAPIKeyFile) || strings.Contains(err.Error(), secret) {
+			t.Errorf("%s: err = %v, want an error naming %s without the key", name, err, config.EnvAPIKeyFile)
 		}
 	}
 }

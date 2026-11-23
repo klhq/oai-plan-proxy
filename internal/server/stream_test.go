@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -333,6 +334,88 @@ func TestTheCodexUsageLimitAsAnEventBeforeOutputIsANoRetry429(t *testing.T) {
 		}
 		if got := oneRequestRecord(t, logs); got["error_code"] != "usage_limit_reached" {
 			t.Errorf("%s: request record = %v, want error_code usage_limit_reached", name, got)
+		}
+	}
+}
+
+// limitUpstream answers 429 with the usage-limit error body after setHeaders
+// adds its headers.
+func limitUpstream(t *testing.T, body string, setHeaders func(http.Header)) *fakeUpstream {
+	t.Helper()
+	return newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		setHeaders(w.Header())
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, body)
+	})
+}
+
+// assertRetryAfter checks that the answer and its record both say to come
+// back in about want seconds.
+func assertRetryAfter(t *testing.T, rec *httptest.ResponseRecorder, logs *logBuffer, want int) {
+	t.Helper()
+	got, err := strconv.Atoi(rec.Header().Get("Retry-After"))
+	if err != nil || got < want-1 || got > want+1 {
+		t.Fatalf("Retry-After = %q, want about %d", rec.Header().Get("Retry-After"), want)
+	}
+	if r := oneRequestRecord(t, logs); r["retry_after_s"] != float64(got) {
+		t.Fatalf("retry_after_s = %v, want %d", r["retry_after_s"], got)
+	}
+}
+
+func TestTheUsageLimitSaysWhenTheLimitResets(t *testing.T) {
+	resetsAt := time.Now().Add(time.Hour).Unix()
+	body := `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_at":` + strconv.FormatInt(resetsAt, 10) + `}}`
+	h, logs := loggedProxy(limitUpstream(t, body, func(http.Header) {}), &fakeTokens{current: "access-1"}, auth.StateValid)
+
+	rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi"}`)
+
+	assertUsageLimit(t, rec)
+	assertRetryAfter(t, rec, logs, 3600)
+}
+
+func TestWithoutAResetTimeTheUsageLimitWaitsForTheSpentWindow(t *testing.T) {
+	in := func(d time.Duration) string { return strconv.FormatInt(time.Now().Add(d).Unix(), 10) }
+	for _, tc := range []struct {
+		name               string
+		primary, secondary string
+		want               int
+	}{
+		{"short window spent", "100", "30", 600},
+		{"both windows spent", "100", "100.0", 7200},
+	} {
+		u := limitUpstream(t, `{"error":{"code":"`+usageLimit+`","message":"Plan usage limit reached."}}`, func(h http.Header) {
+			h.Set("x-codex-primary-used-percent", tc.primary)
+			h.Set("x-codex-primary-reset-at", in(10*time.Minute))
+			h.Set("x-codex-secondary-used-percent", tc.secondary)
+			h.Set("x-codex-secondary-reset-at", in(2*time.Hour))
+		})
+		h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+		rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi"}`)
+
+		t.Run(tc.name, func(t *testing.T) { assertRetryAfter(t, rec, logs, tc.want) })
+	}
+}
+
+func TestTheUsageLimitHasNoRetryAfterWhenTheResetIsUnknown(t *testing.T) {
+	past := strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10)
+	future := strconv.FormatInt(time.Now().Add(time.Hour).Unix(), 10)
+	for name, u := range map[string]*fakeUpstream{
+		"reset time passed": limitUpstream(t, `{"error":{"type":"usage_limit_reached","resets_at":`+past+`}}`, func(http.Header) {}),
+		"no window spent": limitUpstream(t, `{"error":{"type":"usage_limit_reached"}}`, func(h http.Header) {
+			h.Set("x-codex-primary-used-percent", "40")
+			h.Set("x-codex-primary-reset-at", future)
+		}),
+	} {
+		h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+		rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi"}`)
+
+		_, logged := oneRequestRecord(t, logs)["retry_after_s"]
+		if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") != "" || logged {
+			t.Errorf("%s: status = %d, Retry-After = %q, retry_after_s logged = %v; want 429 and neither",
+				name, rec.Code, rec.Header().Get("Retry-After"), logged)
 		}
 	}
 }

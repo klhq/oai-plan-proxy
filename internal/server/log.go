@@ -26,6 +26,8 @@ type requestNote struct {
 	failed bool
 	// usageLimit means the caller got the usage-limit 429.
 	usageLimit bool
+	// retryAfter is the Retry-After the caller got, in seconds.
+	retryAfter int
 }
 
 // tokenUsage is the usage object of a completed response.
@@ -80,6 +82,9 @@ func (n *requestNote) attrs() []any {
 			"input_tokens", n.usage.InputTokens,
 			"output_tokens", n.usage.OutputTokens,
 			"cached_tokens", n.usage.InputTokensDetails.CachedTokens)
+	}
+	if n.retryAfter > 0 {
+		a = append(a, "retry_after_s", n.retryAfter)
 	}
 	for _, w := range n.plan {
 		a = append(a, w.attrs()...)

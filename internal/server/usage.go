@@ -51,3 +51,25 @@ func (w usageWindow) attrs() []any {
 	}
 	return a
 }
+
+// retryAfter is how many whole seconds from now until the usage limit
+// resets, rounded up, or 0 when the reset time is unknown or past. The
+// reset time is f's own when it has one. Otherwise it is the latest reset
+// among the windows that are spent.
+func retryAfter(f upstreamFailure, windows []usageWindow, now time.Time) int {
+	var resets time.Time
+	if f.ResetsAt != 0 {
+		resets = time.Unix(f.ResetsAt, 0)
+	} else {
+		for _, w := range windows {
+			if w.usedPercent >= 100 && w.resetsAt != nil && w.resetsAt.After(resets) {
+				resets = *w.resetsAt
+			}
+		}
+	}
+	wait := resets.Sub(now)
+	if resets.IsZero() || wait <= 0 {
+		return 0
+	}
+	return int(math.Ceil(wait.Seconds()))
+}

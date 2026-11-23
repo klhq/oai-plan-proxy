@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/klhq/oai-plan-proxy/internal/responses"
 )
@@ -146,7 +148,7 @@ func writeUpstreamError(w http.ResponseWriter, resp *http.Response) {
 	note.upstreamStatus = resp.StatusCode
 	note.errorCode = e.Error.logCode()
 	if parsed && e.Error.usageLimit() {
-		writeUsageLimit(w, e.Error.Message)
+		writeUsageLimit(w, e.Error)
 		return
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
@@ -158,11 +160,17 @@ func writeUpstreamError(w http.ResponseWriter, resp *http.Response) {
 
 // writeUsageLimit answers 429 with x-should-retry: false, so a gateway such
 // as Bifrost falls back to its next provider instead of retrying.
-func writeUsageLimit(w http.ResponseWriter, message string) {
+func writeUsageLimit(w http.ResponseWriter, f upstreamFailure) {
+	message := f.Message
 	if message == "" {
 		message = "the ChatGPT plan usage limit is exhausted"
 	}
-	noteOf(w).usageLimit = true
+	note := noteOf(w)
+	note.usageLimit = true
+	if wait := retryAfter(f, note.plan, time.Now()); wait > 0 {
+		note.retryAfter = wait
+		w.Header().Set("Retry-After", strconv.Itoa(wait))
+	}
 	w.Header().Set("x-should-retry", "false")
 	writeError(w, http.StatusTooManyRequests, "insufficient_quota", usageLimitCode, message)
 }
@@ -231,6 +239,8 @@ type upstreamFailure struct {
 	Code    string `json:"code"`
 	Type    string `json:"type"`
 	Message string `json:"message"`
+	// ResetsAt is when a usage limit resets, in Unix seconds.
+	ResetsAt int64 `json:"resets_at"`
 }
 
 // codexUsageLimitType is the error type Codex reads as the usage limit.
@@ -284,7 +294,7 @@ func failure(ev responses.Event) (upstreamFailure, bool) {
 // before any output.
 func writeFailure(w http.ResponseWriter, f upstreamFailure) {
 	if f.usageLimit() {
-		writeUsageLimit(w, f.Message)
+		writeUsageLimit(w, f)
 		return
 	}
 	writeError(w, http.StatusBadGateway, "server_error", f.Code, f.Message)

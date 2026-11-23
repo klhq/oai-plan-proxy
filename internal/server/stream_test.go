@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/klhq/oai-plan-proxy/internal/auth"
 )
 
 // sse formats one server-sent event carrying data.
@@ -293,5 +295,25 @@ func TestAFailureAfterOutputStartedPassesThroughTheStream(t *testing.T) {
 
 	if want := sse(evCreated) + sse(evDelta) + sse(evFailed); rec.Code != http.StatusOK || rec.Body.String() != want {
 		t.Fatalf("response = %d %q, want 200 with the stream as upstream sent it", rec.Code, rec.Body.String())
+	}
+}
+
+// codexUsageLimit is the usage-limit error Codex recognizes: the type names
+// the limit and the reset time is in Unix seconds.
+const codexUsageLimit = `{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_at":1795000000}`
+
+func TestTheCodexUsageLimitAsAnHTTPErrorIsANoRetry429(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":`+codexUsageLimit+`}`)
+	})
+	h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+	rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`)
+
+	assertUsageLimit(t, rec)
+	if got := oneRequestRecord(t, logs); got["level"] != "WARN" || got["error_code"] != "usage_limit_reached" {
+		t.Fatalf("request record = %v, want WARN with error_code usage_limit_reached", got)
 	}
 }

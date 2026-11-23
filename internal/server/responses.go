@@ -144,8 +144,8 @@ func writeUpstreamError(w http.ResponseWriter, resp *http.Response) {
 	parsed := json.Unmarshal(body, &e) == nil
 	note := noteOf(w)
 	note.upstreamStatus = resp.StatusCode
-	note.errorCode = e.Error.Code
-	if parsed && e.Error.Code == usageLimitCode {
+	note.errorCode = e.Error.logCode()
+	if parsed && e.Error.usageLimit() {
 		writeUsageLimit(w, e.Error.Message)
 		return
 	}
@@ -162,6 +162,7 @@ func writeUsageLimit(w http.ResponseWriter, message string) {
 	if message == "" {
 		message = "the ChatGPT plan usage limit is exhausted"
 	}
+	noteOf(w).usageLimit = true
 	w.Header().Set("x-should-retry", "false")
 	writeError(w, http.StatusTooManyRequests, "insufficient_quota", usageLimitCode, message)
 }
@@ -228,7 +229,26 @@ func streamEvents(w http.ResponseWriter, body io.Reader) {
 // upstreamFailure is an error upstream reported inside the event stream.
 type upstreamFailure struct {
 	Code    string `json:"code"`
+	Type    string `json:"type"`
 	Message string `json:"message"`
+}
+
+// codexUsageLimitType is the error type Codex reads as the usage limit.
+const codexUsageLimitType = "usage_limit_reached"
+
+// usageLimit reports whether f says the plan's usage is spent, in either
+// form upstream uses.
+func (f upstreamFailure) usageLimit() bool {
+	return f.Code == usageLimitCode || f.Type == codexUsageLimitType
+}
+
+// logCode names f in the request record: its code, or its type when the
+// code is empty.
+func (f upstreamFailure) logCode() string {
+	if f.Code != "" {
+		return f.Code
+	}
+	return f.Type
 }
 
 // failure reports whether ev is a failed response or an error event and

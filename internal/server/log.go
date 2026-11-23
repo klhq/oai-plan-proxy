@@ -24,6 +24,8 @@ type requestNote struct {
 	errorCode      string
 	// failed means upstream reported a failure inside the event stream.
 	failed bool
+	// usageLimit means the caller got the usage-limit 429.
+	usageLimit bool
 }
 
 // tokenUsage is the usage object of a completed response.
@@ -147,7 +149,7 @@ func logRequests(logger *slog.Logger, next http.Handler) http.Handler {
 		// output had started, inside the stream.
 		streamError := status == http.StatusOK && sw.note.failed
 		level := slog.LevelInfo
-		if status >= http.StatusInternalServerError || sw.note.errorCode == usageLimitCode || streamError {
+		if status >= http.StatusInternalServerError || sw.note.usageLimit || streamError {
 			level = slog.LevelWarn
 		}
 		attrs := []any{

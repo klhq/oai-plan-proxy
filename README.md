@@ -217,6 +217,14 @@ and `dropped` when parameters were removed. A completed response adds
 `stream_error=true`, and a caller that hung up adds `canceled=true`. A
 `/healthz` probe that answers 200 is not logged.
 
+When upstream reports the plan's usage, the record adds it for the short
+(`primary`) and long (`secondary`) windows:
+`usage_primary_percent`, `usage_primary_window_minutes`, and
+`usage_primary_resets_at` in RFC 3339, and the same three for
+`usage_secondary`. Watch `usage_secondary_percent` to see the weekly limit
+coming. A usage-limit answer that carries `Retry-After` adds
+`retry_after_s`.
+
 No record carries a token, the `Authorization` header, the API key, the
 account email or ID, or any request or response content.
 
@@ -271,10 +279,15 @@ A failure before the first output event returns a real HTTP error status,
 never a 200 stream that carries an error. Once output has started, the
 stream passes through as upstream sent it.
 
-When the plan's usage limit is reached
-(`subscription_sharing_usage_limit_exceeded`), the proxy answers 429 with
+When the plan's usage limit is reached, the proxy answers 429 with
 `x-should-retry: false`. A gateway in front of the proxy can then fall back
-to another provider instead of retrying.
+to another provider instead of retrying. Upstream reports the limit as the
+error code `subscription_sharing_usage_limit_exceeded` or the error type
+`usage_limit_reached`, over HTTP or as an event before any output. The
+proxy answers both the same way.
+
+The 429 carries `Retry-After` in seconds when the reset time is known:
+from the error's `resets_at`, or else from the usage window that is spent.
 
 ### `/v1/chat/completions`
 

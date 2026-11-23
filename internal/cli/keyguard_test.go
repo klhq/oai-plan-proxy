@@ -42,3 +42,24 @@ func TestServeRefusesAnOpenListenerWithoutAnAPIKey(t *testing.T) {
 		})
 	}
 }
+
+func TestAllowNoKeyServesAnOpenListenerWithAWarning(t *testing.T) {
+	h := newHarness(t)
+	port := portOf(t, freeAddr(t))
+	h.vars["OAI_PLAN_PROXY_LISTEN"] = "0.0.0.0:" + port
+	h.vars["OAI_PLAN_PROXY_ALLOW_NO_KEY"] = "1"
+	h.vars["OAI_PLAN_PROXY_LOG_FORMAT"] = "json"
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runAsync(ctx, []string{"serve"}, h.env())
+	waitForGet(t, "http://127.0.0.1:"+port+"/healthz").Body.Close()
+
+	stopServe(t, cancel, done)
+
+	warns := logRecords(t, h.stderr.String(), "no API key")
+	if len(warns) != 1 || warns[0]["level"] != "WARN" || warns[0]["addr"] != "0.0.0.0:"+port {
+		t.Fatalf("no API key records = %v, want one WARN with addr 0.0.0.0:%s", warns, port)
+	}
+	if l := logRecords(t, h.stderr.String(), "listening"); len(l) != 1 || l[0]["allow_no_key"] != true {
+		t.Fatalf("listening records = %v, want allow_no_key true", l)
+	}
+}

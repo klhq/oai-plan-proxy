@@ -20,6 +20,8 @@ type Config struct {
 	APIKey  string
 	// LogFormat selects the serve log handler: text or json.
 	LogFormat string
+	// AllowNoKey lets serve run without an API key on an open address.
+	AllowNoKey bool
 }
 
 // Environment variable names.
@@ -44,6 +46,13 @@ func Load(getenv func(string) string, userConfigDir func() (string, error)) (Con
 		DataDir:   getenv(EnvDataDir),
 		APIKey:    getenv(EnvAPIKey),
 		LogFormat: getenv(EnvLogFormat),
+	}
+	switch v := getenv(EnvAllowNoKey); v {
+	case "":
+	case "1":
+		cfg.AllowNoKey = true
+	default:
+		return Config{}, fmt.Errorf("%s must be 1 or unset, not %q", EnvAllowNoKey, v)
 	}
 	if cfg.Listen == "" {
 		cfg.Listen = defaultListen

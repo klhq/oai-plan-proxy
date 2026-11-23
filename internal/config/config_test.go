@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/klhq/oai-plan-proxy/internal/config"
@@ -66,6 +67,21 @@ func TestOnlyLoopbackListenAddressesCountAsLocal(t *testing.T) {
 	} {
 		if got := config.Loopback(listen); got != want {
 			t.Errorf("Loopback(%q) = %v, want %v", listen, got, want)
+		}
+	}
+}
+
+func TestAllowNoKeyAcceptsOnlyOne(t *testing.T) {
+	for value, want := range map[string]bool{"": false, "1": true} {
+		cfg, err := config.Load(env(map[string]string{config.EnvDataDir: t.TempDir(), config.EnvAllowNoKey: value}), nil)
+		if err != nil || cfg.AllowNoKey != want {
+			t.Errorf("%q: AllowNoKey = %v, err = %v; want %v and no error", value, cfg.AllowNoKey, err, want)
+		}
+	}
+	for _, value := range []string{"0", "true", "yes", "false"} {
+		_, err := config.Load(env(map[string]string{config.EnvDataDir: t.TempDir(), config.EnvAllowNoKey: value}), nil)
+		if err == nil || !strings.Contains(err.Error(), config.EnvAllowNoKey) {
+			t.Errorf("%q: err = %v, want an error naming %s", value, err, config.EnvAllowNoKey)
 		}
 	}
 }

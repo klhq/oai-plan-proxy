@@ -358,7 +358,8 @@ func runServe(ctx context.Context, args []string, env Env) int {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
 	}
-	if cfg.APIKey == "" && !config.Loopback(cfg.Listen) {
+	open := cfg.APIKey == "" && !config.Loopback(cfg.Listen)
+	if open && !cfg.AllowNoKey {
 		fmt.Fprintf(env.Stderr, "refusing to serve on %s without an API key: anyone who can reach it would use your ChatGPT plan.\n"+
 			"Set %s or %s, or set %s=1 if the network in front of the proxy already limits who can reach it.\n",
 			cfg.Listen, config.EnvAPIKey, config.EnvAPIKeyFile, config.EnvAllowNoKey)
@@ -409,9 +410,14 @@ func runServe(ctx context.Context, args []string, env Env) int {
 		"upstream", env.upstream(),
 		"strict", *strict,
 		"api_key_set", cfg.APIKey != "",
+		"allow_no_key", cfg.AllowNoKey,
 		"login", string(login),
 		"version", version,
 		"commit", commit)
+	if open {
+		logger.Warn("no API key", "addr", cfg.Listen,
+			"hint", "anyone who can reach this address uses your ChatGPT plan")
+	}
 	if login != auth.StateValid {
 		logger.Warn("sign-in needed", "login", string(login), "hint", tokens.SignInHint)
 	}

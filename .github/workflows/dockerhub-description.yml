@@ -1,0 +1,31 @@
+name: dockerhub-description
+
+# Keeps the Docker Hub page for docker.io/klhq/oai-plan-proxy in step with
+# README.md. It runs when the README changes on main, not on each release,
+# so a docs fix shows up without a new image.
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - .github/workflows/dockerhub-description.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_USERNAME }}/oai-plan-proxy
+          short-description: ${{ github.event.repository.description }}
+          readme-filepath: README.md
+          # Turns relative links such as SECURITY.md into GitHub URLs, which
+          # Docker Hub cannot resolve on its own.
+          enable-url-completion: true

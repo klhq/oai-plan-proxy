@@ -38,7 +38,8 @@ sudo install "oai-plan-proxy_${VERSION}_${PLATFORM}/oai-plan-proxy" /usr/local/b
 ```
 
 **Container.** `ghcr.io/klhq/oai-plan-proxy`, tagged with each release and
-`latest`. See [Container](#container).
+`latest`. From v0.1.7 the same image is also on Docker Hub as
+`klhq/oai-plan-proxy`. See [Container](#container).
 
 **From source.** With Go 1.27 or later:
 

@@ -60,6 +60,8 @@ download before you run it:
 ```bash
 gh attestation verify oai-plan-proxy_${VERSION}_linux_amd64.tar.gz --repo klhq/oai-plan-proxy
 gh attestation verify oci://ghcr.io/klhq/oai-plan-proxy:${VERSION} --repo klhq/oai-plan-proxy
+gh attestation verify oci://docker.io/klhq/oai-plan-proxy:${VERSION} --repo klhq/oai-plan-proxy
 ```
 
 Releases up to v0.1.2 have no attestations. Use `checksums.txt` for those.
+Docker Hub images start at v0.1.7.

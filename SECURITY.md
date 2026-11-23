@@ -20,6 +20,11 @@ file, or any token. You get a first answer within one week.
 The proxy holds a ChatGPT sign-in. Anyone with its refresh token can use your
 ChatGPT plan until you sign out, so the design keeps that token in one place.
 
+- **The API key.** The key is compared in constant time and never
+  logged. `OAI_PLAN_PROXY_API_KEY_FILE` keeps it out of the environment,
+  and a bad key file is reported by name, never by content.
+- **Spending.** `OAI_PLAN_PROXY_MAX_CONCURRENT` caps the model requests in
+  flight, so one runaway caller cannot spend the plan all at once.
 - **Storage.** `credentials.json` and `host_id` live in
   `OAI_PLAN_PROXY_DATA_DIR`. The directory is created with mode `0700` and
   the files with mode `0600`. `export` writes its file with mode `0600`.
@@ -34,11 +39,14 @@ ChatGPT plan until you sign out, so the design keeps that token in one place.
 
 ## What the proxy trusts
 
-- **The network in front of it.** Without `OAI_PLAN_PROXY_API_KEY`, anyone
-  who can reach the listener uses your plan. The default listen address is
-  `127.0.0.1:18080`. The container image listens on `0.0.0.0:18080` and
-  publishes no port unless you ask for one. Set an API key whenever any
-  other process or host can reach the port.
+- **The network in front of it.** Without an API key, anyone who can reach
+  the listener uses your plan. The default listen address is
+  `127.0.0.1:18080`. On any address that is not loopback, `serve` refuses
+  to start without `OAI_PLAN_PROXY_API_KEY` or
+  `OAI_PLAN_PROXY_API_KEY_FILE`, unless you set
+  `OAI_PLAN_PROXY_ALLOW_NO_KEY=1` to say the network already limits who
+  can reach it. Other processes on the same host can still reach a
+  loopback listener without a key.
 - **The host.** Anyone who can read the data directory, or run as its owner,
   can take the sign-in.
 - **OpenAI.** The proxy sends requests to the ChatGPT backend over TLS and

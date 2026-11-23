@@ -18,6 +18,8 @@ type proxy struct {
 	// slots holds one token per model request in flight. It is nil when
 	// there is no limit.
 	slots chan struct{}
+	// pause is when the usage limit is known to hold until.
+	pause pause
 }
 
 // copyResponse copies an upstream answer's status, Content-Type and body.

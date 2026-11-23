@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/klhq/oai-plan-proxy/internal/config"
 )
@@ -47,7 +48,7 @@ func TestLoadReadsEnvironmentOverrides(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	want := config.Config{Listen: "0.0.0.0:9000", DataDir: "/srv/proxy", APIKey: "incoming-key"}
+	want := config.Config{Listen: "0.0.0.0:9000", DataDir: "/srv/proxy", APIKey: "incoming-key", UsageLimitPause: 30 * time.Second}
 	if cfg != want {
 		t.Fatalf("cfg = %+v, want %+v", cfg, want)
 	}
@@ -136,6 +137,21 @@ func TestMaxConcurrentIsAWholeNumber(t *testing.T) {
 		_, err := config.Load(env(map[string]string{config.EnvDataDir: t.TempDir(), config.EnvMaxConcurrent: value}), nil)
 		if err == nil || !strings.Contains(err.Error(), config.EnvMaxConcurrent) {
 			t.Errorf("%q: err = %v, want an error naming %s", value, err, config.EnvMaxConcurrent)
+		}
+	}
+}
+
+func TestUsageLimitPauseIsADurationOfAtMostAnHour(t *testing.T) {
+	for value, want := range map[string]time.Duration{"": 30 * time.Second, "0": 0, "45s": 45 * time.Second, "2m": 2 * time.Minute, "1h": time.Hour} {
+		cfg, err := config.Load(env(map[string]string{config.EnvDataDir: t.TempDir(), config.EnvUsageLimitPause: value}), nil)
+		if err != nil || cfg.UsageLimitPause != want {
+			t.Errorf("%q: UsageLimitPause = %v, err = %v; want %v", value, cfg.UsageLimitPause, err, want)
+		}
+	}
+	for _, value := range []string{"-1s", "soon", "30", "61m", "2h"} {
+		_, err := config.Load(env(map[string]string{config.EnvDataDir: t.TempDir(), config.EnvUsageLimitPause: value}), nil)
+		if err == nil || !strings.Contains(err.Error(), config.EnvUsageLimitPause) {
+			t.Errorf("%q: err = %v, want an error naming %s", value, err, config.EnvUsageLimitPause)
 		}
 	}
 }

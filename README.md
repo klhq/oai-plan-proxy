@@ -205,6 +205,7 @@ OAI_PLAN_PROXY_API_KEY=change-me oai-plan-proxy serve
 | `OAI_PLAN_PROXY_API_KEY_FILE` | File that holds the key, instead of `OAI_PLAN_PROXY_API_KEY` | unset |
 | `OAI_PLAN_PROXY_ALLOW_NO_KEY` | `1` to serve an open address without a key | unset |
 | `OAI_PLAN_PROXY_MAX_CONCURRENT` | Model requests in flight at once; `0` means no limit | `0` |
+| `OAI_PLAN_PROXY_USAGE_LIMIT_PAUSE` | How long to answer the usage limit at once when upstream gives no reset time, from `0` to `1h`; `0` turns the pause off | `30s` |
 | `OAI_PLAN_PROXY_LOG_FORMAT` | `text` or `json` log records on standard error | `text` |
 
 Clients send the key as `Authorization: Bearer <key>`. `serve` refuses to
@@ -237,7 +238,7 @@ otherwise. It needs no API key. Point your container healthcheck at it.
 
 | `msg` | Level | Attributes |
 |---|---|---|
-| `listening` | info | `addr`, `upstream`, `strict`, `api_key_set`, `allow_no_key`, `max_concurrent`, `login`, `version`, `commit` |
+| `listening` | info | `addr`, `upstream`, `strict`, `api_key_set`, `allow_no_key`, `max_concurrent`, `usage_limit_pause`, `login`, `version`, `commit` |
 | `no API key` | warn | `addr`, `hint`; at startup with `OAI_PLAN_PROXY_ALLOW_NO_KEY=1` on an open address |
 | `sign-in needed` | warn | `login`, `hint`; at startup when the sign-in is missing or dead |
 | `request` | info, or warn for a status of 500 or more, a usage limit, a concurrency limit, or a stream error | see below |
@@ -259,7 +260,8 @@ When upstream reports the plan's usage, the record adds it for the short
 `usage_primary_resets_at` in RFC 3339, and the same three for
 `usage_secondary`. Watch `usage_secondary_percent` to see the weekly limit
 coming. A usage-limit answer that carries `Retry-After` adds
-`retry_after_s`.
+`retry_after_s`. A request the proxy answered without asking upstream, because
+the limit was already known to hold, adds `paused=true`.
 
 No record carries a token, the `Authorization` header, the API key, the
 account email or ID, or any request or response content.
@@ -324,6 +326,18 @@ proxy answers both the same way.
 
 The 429 carries `Retry-After` in seconds when the reset time is known:
 from the error's `resets_at`, or else from the usage window that is spent.
+
+Once upstream has reported the limit, the proxy stops asking. Every
+`POST /v1/responses` and `/v1/chat/completions` after that gets the same 429
+at once, with `Retry-After` set to the time left, until the reset time
+upstream gave. Without a reset time, the pause lasts
+`OAI_PLAN_PROXY_USAGE_LIMIT_PAUSE`, and a reset time further off than an
+hour pauses for an hour. The next request after the pause goes to upstream,
+and if the limit still holds, it starts the next pause. This saves the one
+to two seconds each call otherwise spends learning the same answer, which a
+gateway that falls back pays on every request. The limit is for the whole
+plan, so the pause covers every model. `/healthz` and `GET /v1/models` are
+not held back. `OAI_PLAN_PROXY_USAGE_LIMIT_PAUSE=0` turns the pause off.
 
 ### `/v1/chat/completions`
 

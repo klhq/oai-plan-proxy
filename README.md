@@ -130,7 +130,8 @@ credentials unless you pass `--force`. Each host keeps its own `host_id`.
 
 The image is distroless and runs as a non-root user. It keeps its data in
 the `/data` volume, listens on `0.0.0.0:18080`, and runs `serve` unless you
-pass another command.
+pass another command. Because that address is open, `serve` in the image
+needs an API key. See [Serve](#serve).
 
 ```bash
 docker volume create oai-plan-proxy-data
@@ -166,6 +167,25 @@ docker run -d --name oai-plan-proxy \
   ghcr.io/klhq/oai-plan-proxy
 ```
 
+With Docker or Compose secrets, mount the key as a file and point
+`OAI_PLAN_PROXY_API_KEY_FILE` at it, so the key stays out of the
+environment:
+
+```yaml
+services:
+  oai-plan-proxy:
+    image: ghcr.io/klhq/oai-plan-proxy
+    volumes: [oai-plan-proxy-data:/data]
+    environment:
+      OAI_PLAN_PROXY_API_KEY_FILE: /run/secrets/oai_plan_proxy_key
+    secrets: [oai_plan_proxy_key]
+secrets:
+  oai_plan_proxy_key:
+    file: ./oai-plan-proxy-key.txt
+volumes:
+  oai-plan-proxy-data:
+```
+
 The image healthcheck runs `oai-plan-proxy healthcheck`, which exits 0 only
 while `/healthz` answers 200. The container reports unhealthy while the
 sign-in is missing or dead.
@@ -181,10 +201,24 @@ OAI_PLAN_PROXY_API_KEY=change-me oai-plan-proxy serve
 | `OAI_PLAN_PROXY_LISTEN` | Listen address | `127.0.0.1:18080` |
 | `OAI_PLAN_PROXY_DATA_DIR` | Holds `credentials.json` and `host_id` | `os.UserConfigDir()/oai-plan-proxy` |
 | `OAI_PLAN_PROXY_API_KEY` | Bearer key every `/v1` request must carry | unset (no check) |
+| `OAI_PLAN_PROXY_API_KEY_FILE` | File that holds the key, instead of `OAI_PLAN_PROXY_API_KEY` | unset |
+| `OAI_PLAN_PROXY_ALLOW_NO_KEY` | `1` to serve an open address without a key | unset |
+| `OAI_PLAN_PROXY_MAX_CONCURRENT` | Model requests in flight at once; `0` means no limit | `0` |
 | `OAI_PLAN_PROXY_LOG_FORMAT` | `text` or `json` log records on standard error | `text` |
 
-Set `OAI_PLAN_PROXY_API_KEY` whenever the listener is reachable by anything
-other than you. Clients send it as `Authorization: Bearer <key>`.
+Clients send the key as `Authorization: Bearer <key>`. `serve` refuses to
+start when the listen address is not loopback (`localhost`, `127.0.0.0/8`,
+or `::1`) and no key is set, because anyone who can reach it would use your
+plan. If the network in front of the proxy already limits who can reach
+it, set `OAI_PLAN_PROXY_ALLOW_NO_KEY=1`; `serve` then starts and logs a
+`no API key` warning. `OAI_PLAN_PROXY_API_KEY_FILE` trims whitespace around
+the key, and setting both key variables is an error.
+
+With `OAI_PLAN_PROXY_MAX_CONCURRENT=<n>`, a `POST /v1/responses` or
+`/v1/chat/completions` request beyond the first n in flight gets 429 at
+once, with `Retry-After: 1` and the code `concurrency_limit`. It carries no
+`x-should-retry: false`, so a gateway may retry it. Use it to stop one
+runaway caller from spending the plan.
 
 `serve` refreshes the access token at least 60 seconds before it expires.
 The refresh token rotates on every use. The new one is written to disk
@@ -202,9 +236,10 @@ otherwise. It needs no API key. Point your container healthcheck at it.
 
 | `msg` | Level | Attributes |
 |---|---|---|
-| `listening` | info | `addr`, `upstream`, `strict`, `api_key_set`, `login`, `version`, `commit` |
+| `listening` | info | `addr`, `upstream`, `strict`, `api_key_set`, `allow_no_key`, `max_concurrent`, `login`, `version`, `commit` |
+| `no API key` | warn | `addr`, `hint`; at startup with `OAI_PLAN_PROXY_ALLOW_NO_KEY=1` on an open address |
 | `sign-in needed` | warn | `login`, `hint`; at startup when the sign-in is missing or dead |
-| `request` | info, or warn for a status of 500 or more, a usage limit, or a stream error | see below |
+| `request` | info, or warn for a status of 500 or more, a usage limit, a concurrency limit, or a stream error | see below |
 | `token refreshed` | info | `reason` (`scheduled`, `expired`, `upstream_401`), `expires_at` |
 | `token refresh failed` | warn | `reason`, `error`; the sign-in is kept and retried |
 | `sign-in dead` | error | `reason`, `error`, `hint`; logged once, then sign in again |

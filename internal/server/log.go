@@ -154,7 +154,7 @@ func logRequests(logger *slog.Logger, next http.Handler) http.Handler {
 		// output had started, inside the stream.
 		streamError := status == http.StatusOK && sw.note.failed
 		level := slog.LevelInfo
-		if status >= http.StatusInternalServerError || sw.note.usageLimit || streamError {
+		if status >= http.StatusInternalServerError || sw.note.usageLimit || sw.note.errorCode == concurrencyLimitCode || streamError {
 			level = slog.LevelWarn
 		}
 		attrs := []any{

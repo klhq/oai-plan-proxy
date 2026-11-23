@@ -39,6 +39,8 @@ type Options struct {
 	Strict bool
 	// Logger receives one record per request. Nil discards them.
 	Logger *slog.Logger
+	// MaxConcurrent, when above 0, limits the model requests in flight.
+	MaxConcurrent int
 }
 
 // New returns the proxy's HTTP handler.
@@ -56,10 +58,13 @@ func New(opts Options) http.Handler {
 		})
 	})
 	p := &proxy{opts: opts}
+	if opts.MaxConcurrent > 0 {
+		p.slots = make(chan struct{}, opts.MaxConcurrent)
+	}
 	mux.Handle("GET /v1/models", p.v1(p.listModels))
 	mux.Handle("GET /v1/models/{id}", p.v1(p.getModel))
-	mux.Handle("POST /v1/responses", p.v1(p.responsesHandler))
-	mux.Handle("POST /v1/chat/completions", p.v1(p.chatHandler))
+	mux.Handle("POST /v1/responses", p.v1(p.limited(p.responsesHandler)))
+	mux.Handle("POST /v1/chat/completions", p.v1(p.limited(p.chatHandler)))
 	mux.Handle("/v1/", p.keyed(notFound))
 	return logRequests(opts.Logger, mux)
 }

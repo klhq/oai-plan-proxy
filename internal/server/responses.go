@@ -175,14 +175,14 @@ func writeUsageLimit(w http.ResponseWriter, f upstreamFailure) {
 	writeError(w, http.StatusTooManyRequests, "insufficient_quota", usageLimitCode, message)
 }
 
-// preOutput are the events upstream sends before any output. A stream is
-// held back until the first other event, so a failure up to that point can
-// still become a real HTTP error.
-var preOutput = map[string]bool{
-	"response.created":     true,
-	"response.in_progress": true,
-	"response.queued":      true,
-	"response.metadata":    true,
+// startsOutput reports whether an event begins the caller-visible answer.
+// Every output item opens with a response.output_* event, and a terminal
+// event ends a stream that has none. A stream is held back until one of
+// these, so a failure before it can still become a real HTTP error, whatever
+// other event types upstream sends first.
+func startsOutput(typ string) bool {
+	return strings.HasPrefix(typ, "response.output_") ||
+		typ == "response.completed" || typ == "response.incomplete"
 }
 
 // streamEvents forwards upstream events to a streaming caller, flushing
@@ -204,7 +204,7 @@ func streamEvents(w http.ResponseWriter, body io.Reader) {
 			return
 		}
 		held = append(held, ev.Raw)
-		if !preOutput[ev.Type] {
+		if startsOutput(ev.Type) {
 			break
 		}
 	}

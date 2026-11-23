@@ -258,6 +258,35 @@ func TestTheUsageLimitAfterResponseMetadataIsStillANoRetry429(t *testing.T) {
 	assertUsageLimit(t, rec)
 }
 
+// Upstream adds event types over time. One the proxy has never seen must not
+// commit the stream before the first output.
+func TestAnUnknownEventBeforeOutputDoesNotHideTheUsageLimit(t *testing.T) {
+	unknown := `{"type":"response.some_future_event","response_id":"resp_1"}`
+	errEvent := `{"type":"error","error":{"code":"` + usageLimit + `","message":"Plan usage limit reached."}}`
+	u := sseUpstream(t, evCreated, unknown, errEvent)
+	h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+	rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`)
+
+	assertUsageLimit(t, rec)
+}
+
+func TestAStreamThatEndsWithoutOutputStillReachesTheCaller(t *testing.T) {
+	for _, end := range []string{
+		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}`,
+		`{"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete","output":[]}}`,
+	} {
+		u := sseUpstream(t, evCreated, end)
+		h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+		rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`)
+
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), end) {
+			t.Errorf("status = %d, body = %q; want 200 with %s", rec.Code, rec.Body.String(), end)
+		}
+	}
+}
+
 func TestAnErrorEventBeforeOutputIsARealHTTPError(t *testing.T) {
 	cases := []struct {
 		event string

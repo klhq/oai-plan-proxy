@@ -244,6 +244,20 @@ func TestTheUsageLimitAsAFailedEventBeforeOutputIsANoRetry429(t *testing.T) {
 	}
 }
 
+// The plan route sends this sequence once the plan's usage is spent, as seen
+// on a live deployment on 2026-11-23.
+func TestTheUsageLimitAfterResponseMetadataIsStillANoRetry429(t *testing.T) {
+	inProgress := `{"type":"response.in_progress","response":{"id":"resp_1","status":"in_progress"}}`
+	metadata := `{"type":"response.metadata","response_id":"resp_1","metadata":{"openai_chatgpt_moderation_metadata":{"prompt":{},"generation":{},"tool_call":{},"tool_response":{}}}}`
+	errEvent := `{"type":"error","error":{"type":"invalid_request_error","code":"` + usageLimit + `","message":"Plan usage limit reached."}}`
+	u := sseUpstream(t, evCreated, inProgress, metadata, errEvent)
+	h := proxy(u, &fakeTokens{current: "access-1"}, "")
+
+	rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi","stream":true}`)
+
+	assertUsageLimit(t, rec)
+}
+
 func TestAnErrorEventBeforeOutputIsARealHTTPError(t *testing.T) {
 	cases := []struct {
 		event string

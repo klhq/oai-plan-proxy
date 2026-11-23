@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/klhq/oai-plan-proxy/internal/auth"
 )
@@ -41,6 +42,13 @@ type Options struct {
 	Logger *slog.Logger
 	// MaxConcurrent, when above 0, limits the model requests in flight.
 	MaxConcurrent int
+	// UsageLimitPause, when above 0, makes the proxy answer model requests
+	// with the usage-limit 429 at once, without asking upstream, after
+	// upstream reports the plan's usage spent. The pause lasts until the
+	// reset time upstream gives, or this long when it gives none.
+	UsageLimitPause time.Duration
+	// Now is the clock. Nil means time.Now.
+	Now func() time.Time
 }
 
 // New returns the proxy's HTTP handler.
@@ -63,8 +71,8 @@ func New(opts Options) http.Handler {
 	}
 	mux.Handle("GET /v1/models", p.v1(p.listModels))
 	mux.Handle("GET /v1/models/{id}", p.v1(p.getModel))
-	mux.Handle("POST /v1/responses", p.v1(p.limited(p.responsesHandler)))
-	mux.Handle("POST /v1/chat/completions", p.v1(p.limited(p.chatHandler)))
+	mux.Handle("POST /v1/responses", p.v1(p.paused(p.limited(p.responsesHandler))))
+	mux.Handle("POST /v1/chat/completions", p.v1(p.paused(p.limited(p.chatHandler))))
 	mux.Handle("/v1/", p.keyed(notFound))
 	return logRequests(opts.Logger, mux)
 }

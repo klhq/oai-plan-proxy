@@ -28,6 +28,9 @@ type requestNote struct {
 	usageLimit bool
 	// retryAfter is the Retry-After the caller got, in seconds.
 	retryAfter int
+	// paused means the proxy answered at once, without asking upstream,
+	// because the usage limit was already known to hold.
+	paused bool
 }
 
 // tokenUsage is the usage object of a completed response.
@@ -85,6 +88,9 @@ func (n *requestNote) attrs() []any {
 	}
 	if n.retryAfter > 0 {
 		a = append(a, "retry_after_s", n.retryAfter)
+	}
+	if n.paused {
+		a = append(a, "paused", true)
 	}
 	for _, w := range n.plan {
 		a = append(a, w.attrs()...)

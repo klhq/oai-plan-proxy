@@ -419,3 +419,18 @@ func TestTheUsageLimitHasNoRetryAfterWhenTheResetIsUnknown(t *testing.T) {
 		}
 	}
 }
+
+func TestAnOddResetTimeStillGetsTheUsageLimitAnswer(t *testing.T) {
+	soon := float64(time.Now().Add(time.Hour).Unix()) + 0.5
+	for name, resetsAt := range map[string]string{
+		"fraction": strconv.FormatFloat(soon, 'f', 1, 64),
+		"string":   `"tomorrow"`,
+	} {
+		body := `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_at":` + resetsAt + `}}`
+		h := proxy(limitUpstream(t, body, func(http.Header) {}), &fakeTokens{current: "access-1"}, "")
+
+		rec := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi"}`)
+
+		t.Run(name, func(t *testing.T) { assertUsageLimit(t, rec) })
+	}
+}

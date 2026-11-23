@@ -239,8 +239,9 @@ type upstreamFailure struct {
 	Code    string `json:"code"`
 	Type    string `json:"type"`
 	Message string `json:"message"`
-	// ResetsAt is when a usage limit resets, in Unix seconds.
-	ResetsAt int64 `json:"resets_at"`
+	// ResetsAt is when a usage limit resets, in Unix seconds. It stays raw
+	// so that an odd value cannot hide the error it belongs to.
+	ResetsAt json.RawMessage `json:"resets_at"`
 }
 
 // codexUsageLimitType is the error type Codex reads as the usage limit.

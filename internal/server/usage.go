@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"math"
 	"net/http"
 	"strconv"
@@ -58,8 +59,9 @@ func (w usageWindow) attrs() []any {
 // among the windows that are spent.
 func retryAfter(f upstreamFailure, windows []usageWindow, now time.Time) int {
 	var resets time.Time
-	if f.ResetsAt != 0 {
-		resets = time.Unix(f.ResetsAt, 0)
+	var seconds float64
+	if json.Unmarshal(f.ResetsAt, &seconds) == nil && seconds > 0 {
+		resets = time.UnixMilli(int64(seconds * 1000))
 	} else {
 		for _, w := range windows {
 			if w.usedPercent >= 100 && w.resetsAt != nil && w.resetsAt.After(resets) {

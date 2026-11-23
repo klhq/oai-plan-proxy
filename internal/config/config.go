@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -24,6 +25,8 @@ type Config struct {
 	LogFormat string
 	// AllowNoKey lets serve run without an API key on an open address.
 	AllowNoKey bool
+	// MaxConcurrent limits the model requests in flight; 0 means no limit.
+	MaxConcurrent int
 }
 
 // Environment variable names.
@@ -36,6 +39,8 @@ const (
 	EnvAPIKeyFile = "OAI_PLAN_PROXY_API_KEY_FILE"
 	// EnvAllowNoKey set to 1 lets serve run without a key on any address.
 	EnvAllowNoKey = "OAI_PLAN_PROXY_ALLOW_NO_KEY"
+	// EnvMaxConcurrent limits the model requests in flight.
+	EnvMaxConcurrent = "OAI_PLAN_PROXY_MAX_CONCURRENT"
 )
 
 // Load reads settings through getenv. userConfigDir supplies the base
@@ -55,6 +60,13 @@ func Load(getenv func(string) string, userConfigDir func() (string, error)) (Con
 			return Config{}, err
 		}
 		cfg.APIKey = key
+	}
+	if v := getenv(EnvMaxConcurrent); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 0 {
+			return Config{}, fmt.Errorf("%s must be a whole number of 0 or more, not %q", EnvMaxConcurrent, v)
+		}
+		cfg.MaxConcurrent = n
 	}
 	switch v := getenv(EnvAllowNoKey); v {
 	case "":

@@ -124,3 +124,18 @@ func TestABadAPIKeyFileIsAConfigErrorThatHidesTheKey(t *testing.T) {
 		}
 	}
 }
+
+func TestMaxConcurrentIsAWholeNumber(t *testing.T) {
+	for value, want := range map[string]int{"": 0, "0": 0, "4": 4} {
+		cfg, err := config.Load(env(map[string]string{config.EnvDataDir: t.TempDir(), config.EnvMaxConcurrent: value}), nil)
+		if err != nil || cfg.MaxConcurrent != want {
+			t.Errorf("%q: MaxConcurrent = %d, err = %v; want %d", value, cfg.MaxConcurrent, err, want)
+		}
+	}
+	for _, value := range []string{"-1", "four", "1.5", " 4"} {
+		_, err := config.Load(env(map[string]string{config.EnvDataDir: t.TempDir(), config.EnvMaxConcurrent: value}), nil)
+		if err == nil || !strings.Contains(err.Error(), config.EnvMaxConcurrent) {
+			t.Errorf("%q: err = %v, want an error naming %s", value, err, config.EnvMaxConcurrent)
+		}
+	}
+}

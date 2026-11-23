@@ -15,6 +15,9 @@ import (
 
 type proxy struct {
 	opts Options
+	// slots holds one token per model request in flight. It is nil when
+	// there is no limit.
+	slots chan struct{}
 }
 
 // copyResponse copies an upstream answer's status, Content-Type and body.

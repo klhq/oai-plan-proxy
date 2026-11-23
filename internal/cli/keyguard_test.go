@@ -63,3 +63,21 @@ func TestAllowNoKeyServesAnOpenListenerWithAWarning(t *testing.T) {
 		t.Fatalf("listening records = %v, want allow_no_key true", l)
 	}
 }
+
+func TestServeLogsItsConcurrencyLimit(t *testing.T) {
+	for value, want := range map[string]float64{"": 0, "3": 3} {
+		h := newHarness(t)
+		h.vars["OAI_PLAN_PROXY_LOG_FORMAT"] = "json"
+		h.vars["OAI_PLAN_PROXY_LISTEN"] = freeAddr(t)
+		h.vars["OAI_PLAN_PROXY_MAX_CONCURRENT"] = value
+		ctx, cancel := context.WithCancel(context.Background())
+		done := runAsync(ctx, []string{"serve"}, h.env())
+		waitForGet(t, "http://"+h.vars["OAI_PLAN_PROXY_LISTEN"]+"/healthz").Body.Close()
+
+		stopServe(t, cancel, done)
+
+		if l := logRecords(t, h.stderr.String(), "listening"); len(l) != 1 || l[0]["max_concurrent"] != want {
+			t.Errorf("%q: listening records = %v, want max_concurrent %v", value, l, want)
+		}
+	}
+}

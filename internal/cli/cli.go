@@ -396,11 +396,12 @@ func runServe(ctx context.Context, args []string, env Env) int {
 			Upstream: env.upstream(),
 			// No overall timeout: response streams run for minutes. The
 			// caller's context still cancels a stalled request.
-			Client:        &http.Client{Transport: env.httpClient().Transport},
-			APIKey:        cfg.APIKey,
-			Strict:        *strict,
-			Logger:        logger,
-			MaxConcurrent: cfg.MaxConcurrent,
+			Client:          &http.Client{Transport: env.httpClient().Transport},
+			APIKey:          cfg.APIKey,
+			Strict:          *strict,
+			Logger:          logger,
+			MaxConcurrent:   cfg.MaxConcurrent,
+			UsageLimitPause: cfg.UsageLimitPause,
 		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -413,6 +414,7 @@ func runServe(ctx context.Context, args []string, env Env) int {
 		"api_key_set", cfg.APIKey != "",
 		"allow_no_key", cfg.AllowNoKey,
 		"max_concurrent", cfg.MaxConcurrent,
+		"usage_limit_pause", cfg.UsageLimitPause.String(),
 		"login", string(login),
 		"version", version,
 		"commit", commit)

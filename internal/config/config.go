@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -27,7 +28,14 @@ type Config struct {
 	AllowNoKey bool
 	// MaxConcurrent limits the model requests in flight; 0 means no limit.
 	MaxConcurrent int
+	// UsageLimitPause is how long serve answers the usage limit at once after
+	// upstream reports it with no reset time; 0 turns the pause off.
+	UsageLimitPause time.Duration
 }
+
+// defaultUsageLimitPause is how long serve holds model requests back after
+// upstream reports the usage limit with no reset time.
+const defaultUsageLimitPause = 30 * time.Second
 
 // Environment variable names.
 const (
@@ -41,6 +49,9 @@ const (
 	EnvAllowNoKey = "OAI_PLAN_PROXY_ALLOW_NO_KEY"
 	// EnvMaxConcurrent limits the model requests in flight.
 	EnvMaxConcurrent = "OAI_PLAN_PROXY_MAX_CONCURRENT"
+	// EnvUsageLimitPause sets how long to hold back model requests after the
+	// usage limit.
+	EnvUsageLimitPause = "OAI_PLAN_PROXY_USAGE_LIMIT_PAUSE"
 )
 
 // Load reads settings through getenv. userConfigDir supplies the base
@@ -67,6 +78,14 @@ func Load(getenv func(string) string, userConfigDir func() (string, error)) (Con
 			return Config{}, fmt.Errorf("%s must be a whole number of 0 or more, not %q", EnvMaxConcurrent, v)
 		}
 		cfg.MaxConcurrent = n
+	}
+	cfg.UsageLimitPause = defaultUsageLimitPause
+	if v := getenv(EnvUsageLimitPause); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil || d < 0 || d > time.Hour {
+			return Config{}, fmt.Errorf("%s must be a duration from 0 to 1h such as 30s, not %q", EnvUsageLimitPause, v)
+		}
+		cfg.UsageLimitPause = d
 	}
 	switch v := getenv(EnvAllowNoKey); v {
 	case "":

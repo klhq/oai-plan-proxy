@@ -81,3 +81,21 @@ func TestServeLogsItsConcurrencyLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestServeLogsItsUsageLimitPause(t *testing.T) {
+	for value, want := range map[string]string{"": "30s", "0": "0s", "2m": "2m0s"} {
+		h := newHarness(t)
+		h.vars["OAI_PLAN_PROXY_LOG_FORMAT"] = "json"
+		h.vars["OAI_PLAN_PROXY_LISTEN"] = freeAddr(t)
+		h.vars["OAI_PLAN_PROXY_USAGE_LIMIT_PAUSE"] = value
+		ctx, cancel := context.WithCancel(context.Background())
+		done := runAsync(ctx, []string{"serve"}, h.env())
+		waitForGet(t, "http://"+h.vars["OAI_PLAN_PROXY_LISTEN"]+"/healthz").Body.Close()
+
+		stopServe(t, cancel, done)
+
+		if l := logRecords(t, h.stderr.String(), "listening"); len(l) != 1 || l[0]["usage_limit_pause"] != want {
+			t.Errorf("%q: listening records = %v, want usage_limit_pause %q", value, l, want)
+		}
+	}
+}

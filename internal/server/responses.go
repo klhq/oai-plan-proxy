@@ -252,8 +252,9 @@ func (f upstreamFailure) logCode() string {
 }
 
 // failure reports whether ev is a failed response or an error event and
-// extracts its error. A failed response nests the error in response.error;
-// an error event carries code and message at the top level.
+// extracts its error. A failed response nests the error in response.error.
+// An error event carries code and message at the top level, or nests them
+// in error the way Codex reads them.
 func failure(ev responses.Event) (upstreamFailure, bool) {
 	switch ev.Type {
 	case "response.failed":
@@ -265,9 +266,16 @@ func failure(ev responses.Event) (upstreamFailure, bool) {
 		_ = json.Unmarshal(ev.Data, &failed)
 		return failed.Response.Error, true
 	case "error":
-		var e upstreamFailure
+		var e struct {
+			Code    string           `json:"code"`
+			Message string           `json:"message"`
+			Error   *upstreamFailure `json:"error"`
+		}
 		_ = json.Unmarshal(ev.Data, &e)
-		return e, true
+		if e.Error != nil {
+			return *e.Error, true
+		}
+		return upstreamFailure{Code: e.Code, Message: e.Message}, true
 	}
 	return upstreamFailure{}, false
 }
@@ -275,7 +283,7 @@ func failure(ev responses.Event) (upstreamFailure, bool) {
 // writeFailure answers with an HTTP error for a failure upstream reported
 // before any output.
 func writeFailure(w http.ResponseWriter, f upstreamFailure) {
-	if f.Code == usageLimitCode {
+	if f.usageLimit() {
 		writeUsageLimit(w, f.Message)
 		return
 	}

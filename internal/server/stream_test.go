@@ -317,3 +317,22 @@ func TestTheCodexUsageLimitAsAnHTTPErrorIsANoRetry429(t *testing.T) {
 		t.Fatalf("request record = %v, want WARN with error_code usage_limit_reached", got)
 	}
 }
+
+func TestTheCodexUsageLimitAsAnEventBeforeOutputIsANoRetry429(t *testing.T) {
+	for name, ev := range map[string]string{
+		"failed response": `{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":` + codexUsageLimit + `}}`,
+		"error event":     `{"type":"error","status":429,"error":` + codexUsageLimit + `}`,
+	} {
+		h, logs := loggedProxy(sseUpstream(t, evCreated, ev), &fakeTokens{current: "access-1"}, auth.StateValid)
+
+		rec := post(t, h, "/v1/chat/completions", `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`)
+
+		if rec.Code != http.StatusTooManyRequests || rec.Header().Get("x-should-retry") != "false" {
+			t.Errorf("%s: status = %d, x-should-retry = %q, want 429 and false", name, rec.Code, rec.Header().Get("x-should-retry"))
+			continue
+		}
+		if got := oneRequestRecord(t, logs); got["error_code"] != "usage_limit_reached" {
+			t.Errorf("%s: request record = %v, want error_code usage_limit_reached", name, got)
+		}
+	}
+}

@@ -41,7 +41,7 @@ type tokenUsage struct {
 func (n *requestNote) observe(ev responses.Event) {
 	if f, ok := failure(ev); ok {
 		n.failed = true
-		n.errorCode = f.Code
+		n.errorCode = f.logCode()
 		return
 	}
 	if ev.Type != "response.completed" {

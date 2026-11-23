@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -284,5 +285,88 @@ func TestAFailureAfterOutputStartedIsLoggedAsAStreamError(t *testing.T) {
 			rec["error_code"] != "server_error" || rec["stream_error"] != true {
 			t.Errorf("%s: request record = %v", tc.path, rec)
 		}
+	}
+}
+
+// usageHeaders sets the plan usage headers Codex reads on every answer.
+func usageHeaders(w http.ResponseWriter) {
+	w.Header().Set("x-codex-primary-used-percent", "42.5")
+	w.Header().Set("x-codex-primary-window-minutes", "300")
+	w.Header().Set("x-codex-primary-reset-at", "1795000000")
+	w.Header().Set("x-codex-secondary-used-percent", "7")
+	w.Header().Set("x-codex-secondary-window-minutes", "10080")
+	w.Header().Set("x-codex-secondary-reset-at", "1795500000")
+}
+
+func TestARequestLogsThePlanUsageUpstreamReports(t *testing.T) {
+	completed := func(w http.ResponseWriter, r *http.Request) {
+		usageHeaders(w)
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range []string{evCreated, evDelta, evCompletedWithUsage} {
+			_, _ = io.WriteString(w, sse(ev))
+		}
+	}
+	rejected := func(w http.ResponseWriter, r *http.Request) {
+		usageHeaders(w)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"code":"invalid_value","message":"bad"}}`)
+	}
+	for _, tc := range []struct {
+		name    string
+		respond func(http.ResponseWriter, *http.Request)
+		path    string
+		body    string
+	}{
+		{"responses", completed, "/v1/responses", `{"model":"gpt-5","input":"hi"}`},
+		{"chat stream", completed, "/v1/chat/completions", `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}],"stream":true}`},
+		{"upstream error", rejected, "/v1/responses", `{"model":"gpt-5","input":"hi"}`},
+	} {
+		h, logs := loggedProxy(newUpstream(t, tc.respond), &fakeTokens{current: "access-1"}, auth.StateValid)
+
+		post(t, h, tc.path, tc.body)
+
+		rec := oneRequestRecord(t, logs)
+		want := map[string]any{
+			"usage_primary_percent":          42.5,
+			"usage_primary_window_minutes":   float64(300),
+			"usage_primary_resets_at":        "2026-11-18T11:06:40Z",
+			"usage_secondary_percent":        float64(7),
+			"usage_secondary_window_minutes": float64(10080),
+			"usage_secondary_resets_at":      "2026-11-24T06:00:00Z",
+		}
+		for k, v := range want {
+			if rec[k] != v {
+				t.Errorf("%s: %s = %v, want %v; record = %v", tc.name, k, rec[k], v, rec)
+			}
+		}
+	}
+}
+
+func TestUnreadableUsageHeadersAddNoAttributes(t *testing.T) {
+	u := newUpstream(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("x-codex-primary-used-percent", "12")
+		w.Header().Set("x-codex-primary-window-minutes", "five hours")
+		w.Header().Set("x-codex-primary-reset-at", "soon")
+		w.Header().Set("x-codex-secondary-used-percent", "NaN")
+		w.Header().Set("x-codex-secondary-reset-at", "1795500000")
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, ev := range []string{evCreated, evDelta, evCompletedWithUsage} {
+			_, _ = io.WriteString(w, sse(ev))
+		}
+	})
+	h, logs := loggedProxy(u, &fakeTokens{current: "access-1"}, auth.StateValid)
+
+	res := post(t, h, "/v1/responses", `{"model":"gpt-5","input":"hi"}`)
+
+	rec := oneRequestRecord(t, logs)
+	var usage []string
+	for k := range rec {
+		if strings.HasPrefix(k, "usage_") {
+			usage = append(usage, k)
+		}
+	}
+	if res.Code != http.StatusOK || len(usage) != 1 || rec["usage_primary_percent"] != float64(12) {
+		t.Fatalf("status = %d, usage attributes = %v, want 200 and only usage_primary_percent; record = %v", res.Code, usage, rec)
 	}
 }

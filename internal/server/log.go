@@ -17,11 +17,17 @@ type requestNote struct {
 	stream  *bool
 	dropped []string
 	usage   *tokenUsage
+	// plan holds the plan usage windows upstream reported.
+	plan []usageWindow
 	// upstreamStatus is the HTTP status of an upstream error answer.
 	upstreamStatus int
 	errorCode      string
 	// failed means upstream reported a failure inside the event stream.
 	failed bool
+	// usageLimit means the caller got the usage-limit 429.
+	usageLimit bool
+	// retryAfter is the Retry-After the caller got, in seconds.
+	retryAfter int
 }
 
 // tokenUsage is the usage object of a completed response.
@@ -37,7 +43,7 @@ type tokenUsage struct {
 func (n *requestNote) observe(ev responses.Event) {
 	if f, ok := failure(ev); ok {
 		n.failed = true
-		n.errorCode = f.Code
+		n.errorCode = f.logCode()
 		return
 	}
 	if ev.Type != "response.completed" {
@@ -76,6 +82,12 @@ func (n *requestNote) attrs() []any {
 			"input_tokens", n.usage.InputTokens,
 			"output_tokens", n.usage.OutputTokens,
 			"cached_tokens", n.usage.InputTokensDetails.CachedTokens)
+	}
+	if n.retryAfter > 0 {
+		a = append(a, "retry_after_s", n.retryAfter)
+	}
+	for _, w := range n.plan {
+		a = append(a, w.attrs()...)
 	}
 	return a
 }
@@ -142,7 +154,7 @@ func logRequests(logger *slog.Logger, next http.Handler) http.Handler {
 		// output had started, inside the stream.
 		streamError := status == http.StatusOK && sw.note.failed
 		level := slog.LevelInfo
-		if status >= http.StatusInternalServerError || sw.note.errorCode == usageLimitCode || streamError {
+		if status >= http.StatusInternalServerError || sw.note.usageLimit || streamError {
 			level = slog.LevelWarn
 		}
 		attrs := []any{

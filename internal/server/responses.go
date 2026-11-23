@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/klhq/oai-plan-proxy/internal/responses"
 )
@@ -81,6 +83,7 @@ func (p *proxy) sendResponses(w http.ResponseWriter, r *http.Request, body []byt
 		writeSendError(w, err)
 		return nil, false
 	}
+	note.plan = usageWindows(resp.Header)
 	if resp.StatusCode/100 != 2 {
 		defer resp.Body.Close()
 		writeUpstreamError(w, resp)
@@ -143,9 +146,9 @@ func writeUpstreamError(w http.ResponseWriter, resp *http.Response) {
 	parsed := json.Unmarshal(body, &e) == nil
 	note := noteOf(w)
 	note.upstreamStatus = resp.StatusCode
-	note.errorCode = e.Error.Code
-	if parsed && e.Error.Code == usageLimitCode {
-		writeUsageLimit(w, e.Error.Message)
+	note.errorCode = e.Error.logCode()
+	if parsed && e.Error.usageLimit() {
+		writeUsageLimit(w, e.Error)
 		return
 	}
 	if ct := resp.Header.Get("Content-Type"); ct != "" {
@@ -157,9 +160,16 @@ func writeUpstreamError(w http.ResponseWriter, resp *http.Response) {
 
 // writeUsageLimit answers 429 with x-should-retry: false, so a gateway such
 // as Bifrost falls back to its next provider instead of retrying.
-func writeUsageLimit(w http.ResponseWriter, message string) {
+func writeUsageLimit(w http.ResponseWriter, f upstreamFailure) {
+	message := f.Message
 	if message == "" {
 		message = "the ChatGPT plan usage limit is exhausted"
+	}
+	note := noteOf(w)
+	note.usageLimit = true
+	if wait := retryAfter(f, note.plan, time.Now()); wait > 0 {
+		note.retryAfter = wait
+		w.Header().Set("Retry-After", strconv.Itoa(wait))
 	}
 	w.Header().Set("x-should-retry", "false")
 	writeError(w, http.StatusTooManyRequests, "insufficient_quota", usageLimitCode, message)
@@ -227,12 +237,35 @@ func streamEvents(w http.ResponseWriter, body io.Reader) {
 // upstreamFailure is an error upstream reported inside the event stream.
 type upstreamFailure struct {
 	Code    string `json:"code"`
+	Type    string `json:"type"`
 	Message string `json:"message"`
+	// ResetsAt is when a usage limit resets, in Unix seconds. It stays raw
+	// so that an odd value cannot hide the error it belongs to.
+	ResetsAt json.RawMessage `json:"resets_at"`
+}
+
+// codexUsageLimitType is the error type Codex reads as the usage limit.
+const codexUsageLimitType = "usage_limit_reached"
+
+// usageLimit reports whether f says the plan's usage is spent, in either
+// form upstream uses.
+func (f upstreamFailure) usageLimit() bool {
+	return f.Code == usageLimitCode || f.Type == codexUsageLimitType
+}
+
+// logCode names f in the request record: its code, or its type when the
+// code is empty.
+func (f upstreamFailure) logCode() string {
+	if f.Code != "" {
+		return f.Code
+	}
+	return f.Type
 }
 
 // failure reports whether ev is a failed response or an error event and
-// extracts its error. A failed response nests the error in response.error;
-// an error event carries code and message at the top level.
+// extracts its error. A failed response nests the error in response.error.
+// An error event carries code and message at the top level, or nests them
+// in error the way Codex reads them.
 func failure(ev responses.Event) (upstreamFailure, bool) {
 	switch ev.Type {
 	case "response.failed":
@@ -244,9 +277,16 @@ func failure(ev responses.Event) (upstreamFailure, bool) {
 		_ = json.Unmarshal(ev.Data, &failed)
 		return failed.Response.Error, true
 	case "error":
-		var e upstreamFailure
+		var e struct {
+			Code    string           `json:"code"`
+			Message string           `json:"message"`
+			Error   *upstreamFailure `json:"error"`
+		}
 		_ = json.Unmarshal(ev.Data, &e)
-		return e, true
+		if e.Error != nil {
+			return *e.Error, true
+		}
+		return upstreamFailure{Code: e.Code, Message: e.Message}, true
 	}
 	return upstreamFailure{}, false
 }
@@ -254,8 +294,8 @@ func failure(ev responses.Event) (upstreamFailure, bool) {
 // writeFailure answers with an HTTP error for a failure upstream reported
 // before any output.
 func writeFailure(w http.ResponseWriter, f upstreamFailure) {
-	if f.Code == usageLimitCode {
-		writeUsageLimit(w, f.Message)
+	if f.usageLimit() {
+		writeUsageLimit(w, f)
 		return
 	}
 	writeError(w, http.StatusBadGateway, "server_error", f.Code, f.Message)

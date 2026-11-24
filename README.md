@@ -123,7 +123,8 @@ oai-plan-proxy export - | ssh <host> 'oai-plan-proxy import -'
 `export` moves the sign-in: once it is written out, the exporting machine
 deletes its own copy without revoking it. The refresh token rotates on
 every use, so two machines holding it would end up invalidating each other.
-If the import fails, run `login` again. `export <file>` writes a file with
+If the import fails, run `login` again. A pipe cannot tell `export` that
+the far end failed, so check that `ssh <host> true` works before you run it. `export <file>` writes a file with
 mode `0600` instead; it holds a live refresh token, so delete it after the
 import. A failed export keeps the sign-in where it was. `import` refuses to
 replace stored credentials unless you pass `--force`. Each host keeps its

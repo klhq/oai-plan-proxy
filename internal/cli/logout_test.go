@@ -53,6 +53,16 @@ func (h *harness) store(t *testing.T) *store.Store {
 	return st
 }
 
+// hostID returns h's host ID, creating it on first use.
+func (h *harness) hostID(t *testing.T) string {
+	t.Helper()
+	id, err := h.store(t).HostID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
 func receiveForm(t *testing.T, forms <-chan url.Values) url.Values {
 	t.Helper()
 	select {

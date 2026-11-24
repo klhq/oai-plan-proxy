@@ -167,16 +167,6 @@ func TestExportMovesTheSignInOffThisHostWithoutRevokingIt(t *testing.T) {
 	}
 }
 
-// hostID returns h's host ID, creating it on first use.
-func (h *harness) hostID(t *testing.T) string {
-	t.Helper()
-	id, err := h.store(t).HostID()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return id
-}
-
 func TestAFailedExportKeepsTheSignInOnThisHost(t *testing.T) {
 	h := newHarness(t)
 	h.saveCredentials(t, signedIn())

@@ -191,3 +191,45 @@ func TestAFailedExportKeepsTheSignInOnThisHost(t *testing.T) {
 		t.Fatalf("Load after a failed export = %+v, %v; want the sign-in kept", got, err)
 	}
 }
+
+// export - | ssh host import - moves a sign-in without a file on either disk.
+func TestExportToStandardOutputPipesIntoImport(t *testing.T) {
+	laptop, server := newHarness(t), newHarness(t)
+	laptop.saveCredentials(t, signedIn())
+
+	if code := cli.Run(context.Background(), []string{"export", "-"}, laptop.env()); code != 0 {
+		t.Fatalf("export - exit code = %d; stderr: %s", code, laptop.stderr.String())
+	}
+	server.stdin = strings.NewReader(laptop.stdout.String())
+	if code := cli.Run(context.Background(), []string{"import", "-"}, server.env()); code != 0 {
+		t.Fatalf("import - exit code = %d; stderr: %s; export stdout: %q", code, server.stderr.String(), laptop.stdout.String())
+	}
+
+	if got, err := server.store(t).Load(); err != nil || got != signedIn() {
+		t.Fatalf("server Load = %+v, %v; want the exported sign-in", got, err)
+	}
+	if _, err := laptop.store(t).Load(); !errors.Is(err, store.ErrNoCredentials) {
+		t.Fatalf("laptop Load after export -: err = %v, want ErrNoCredentials", err)
+	}
+}
+
+// brokenPipe fails every write, like a pipe whose reader has exited.
+type brokenPipe struct{}
+
+func (brokenPipe) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+func TestAnExportThatCannotWriteToStandardOutputKeepsTheSignIn(t *testing.T) {
+	h := newHarness(t)
+	h.saveCredentials(t, signedIn())
+	env := h.env()
+	env.Stdout = brokenPipe{}
+
+	code := cli.Run(context.Background(), []string{"export", "-"}, env)
+
+	if code == 0 {
+		t.Fatal("export - into a broken pipe exited 0")
+	}
+	if got, err := h.store(t).Load(); err != nil || got != signedIn() {
+		t.Fatalf("Load after a failed export - = %+v, %v; want the sign-in kept", got, err)
+	}
+}

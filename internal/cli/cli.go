@@ -50,7 +50,7 @@ commands:
   serve    run the HTTP proxy: serve [--strict]
   status   show the stored sign-in
   logout   revoke the sign-in and delete the stored credentials
-  export   write the stored credentials to a file: export <file>
+  export   move the sign-in to a file or standard output: export <file|->
   import   install exported credentials: import [--force] <file|->
   healthcheck  exit 0 when the running proxy's /healthz answers 200
   version  print the version and build details
@@ -221,7 +221,7 @@ func runLogout(ctx context.Context, env Env) int {
 // holding it would end up invalidating each other. The host ID stays.
 func runExport(ctx context.Context, args []string, env Env) int {
 	if len(args) != 1 {
-		fmt.Fprintln(env.Stderr, "usage: oai-plan-proxy export <file>")
+		fmt.Fprintln(env.Stderr, "usage: oai-plan-proxy export <file|->")
 		return 2
 	}
 	st, err := openStore(env)
@@ -242,16 +242,42 @@ func runExport(ctx context.Context, args []string, env Env) int {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
 	}
-	if err := writePrivateJSON(args[0], c); err != nil {
+	// With "-" the sign-in goes to standard output for a pipe such as
+	// `export - | ssh host oai-plan-proxy import -`, and the messages go to
+	// standard error so they cannot mix with it.
+	dest := args[0]
+	if dest == "-" {
+		dest = "standard output"
+		err = writeJSON(env.Stdout, c)
+	} else {
+		err = writePrivateJSON(dest, c)
+	}
+	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
 	}
 	if err := st.Delete(); err != nil {
-		fmt.Fprintf(env.Stderr, "%v\nthe sign-in is in %s and still on this host; delete one copy\n", err, args[0])
+		fmt.Fprintf(env.Stderr, "%v\nthe sign-in went to %s and is still on this host; delete one copy\n", err, dest)
 		return 1
 	}
-	fmt.Fprintf(env.Stdout, "Moved the sign-in to %s; this host no longer holds it. The file holds live tokens: copy it over SSH, import it, and delete it.\n", args[0])
+	if args[0] == "-" {
+		fmt.Fprintln(env.Stderr, "Moved the sign-in to standard output; this host no longer holds it. If the import fails, sign in again.")
+	} else {
+		fmt.Fprintf(env.Stdout, "Moved the sign-in to %s; this host no longer holds it. The file holds live tokens: copy it over SSH, import it, and delete it.\n", dest)
+	}
 	return 0
+}
+
+// writeJSON writes v to w as indented JSON with a final newline.
+func writeJSON(w io.Writer, v any) error {
+	b, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode credentials: %w", err)
+	}
+	if _, err := w.Write(append(b, '\n')); err != nil {
+		return fmt.Errorf("write credentials: %w", err)
+	}
+	return nil
 }
 
 // writePrivateJSON writes v to path readable by the owner only. Chmod covers

@@ -112,20 +112,23 @@ oai-plan-proxy login
 The browser redirect reaches the server through the tunnel. The tokens never
 leave the server.
 
-**Export and import.** Sign in on a machine with a browser, copy
-the credential file over SSH, and install it on the server:
+**Export and import.** Sign in on a machine with a browser and pipe the
+sign-in straight into the server, so no file lands on either disk:
 
 ```bash
 oai-plan-proxy login
-oai-plan-proxy export creds.json
-scp creds.json <host>:
-ssh <host> 'oai-plan-proxy import creds.json && rm creds.json'
-rm creds.json
+oai-plan-proxy export - | ssh <host> 'oai-plan-proxy import -'
 ```
 
-`export` writes the file with mode `0600`. It holds a live refresh token, so
-delete every copy after the import. `import` refuses to replace stored
-credentials unless you pass `--force`. Each host keeps its own `host_id`.
+`export` moves the sign-in: once it is written out, the exporting machine
+deletes its own copy without revoking it. The refresh token rotates on
+every use, so two machines holding it would end up invalidating each other.
+If the import fails, run `login` again. A pipe cannot tell `export` that
+the far end failed, so check that `ssh <host> true` works before you run it. `export <file>` writes a file with
+mode `0600` instead; it holds a live refresh token, so delete it after the
+import. A failed export keeps the sign-in where it was. `import` refuses to
+replace stored credentials unless you pass `--force`. Each host keeps its
+own `host_id`.
 
 ## Container
 
@@ -149,13 +152,11 @@ docker run --rm -it -v oai-plan-proxy-data:/data ghcr.io/klhq/oai-plan-proxy log
 ```
 
 **Import.** Sign in on a laptop and pipe the export into the volume, so no
-copy of the file lands on the server:
+file lands on either machine. The laptop keeps no copy afterwards:
 
 ```bash
 oai-plan-proxy login
-oai-plan-proxy export creds.json
-ssh <host> docker run --rm -i -v oai-plan-proxy-data:/data ghcr.io/klhq/oai-plan-proxy import - < creds.json
-rm creds.json
+oai-plan-proxy export - | ssh <host> docker run --rm -i -v oai-plan-proxy-data:/data ghcr.io/klhq/oai-plan-proxy import -
 ```
 
 Then run it:

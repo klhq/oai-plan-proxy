@@ -145,3 +145,81 @@ func TestImportDashReadsTheCredentialsFromStandardInput(t *testing.T) {
 		t.Fatalf("stored %+v, %v; want %+v", got, err, signedIn())
 	}
 }
+
+// An exported sign-in must live on one host only: the refresh token rotates
+// on every use, so two holders end up invalidating each other.
+func TestExportMovesTheSignInOffThisHostWithoutRevokingIt(t *testing.T) {
+	laptop := newHarness(t)
+	laptop.saveCredentials(t, signedIn())
+	hostID := laptop.hostID(t)
+	file := filepath.Join(t.TempDir(), "creds.json")
+
+	code := cli.Run(context.Background(), []string{"export", file}, laptop.env())
+
+	if code != 0 {
+		t.Fatalf("export exit code = %d; stderr: %s", code, laptop.stderr.String())
+	}
+	if _, err := laptop.store(t).Load(); !errors.Is(err, store.ErrNoCredentials) {
+		t.Fatalf("laptop Load after export: err = %v, want ErrNoCredentials", err)
+	}
+	if got := laptop.hostID(t); got != hostID {
+		t.Fatalf("host_id after export = %q, want it kept as %q", got, hostID)
+	}
+}
+
+func TestAFailedExportKeepsTheSignInOnThisHost(t *testing.T) {
+	h := newHarness(t)
+	h.saveCredentials(t, signedIn())
+	file := filepath.Join(t.TempDir(), "missing-dir", "creds.json")
+
+	code := cli.Run(context.Background(), []string{"export", file}, h.env())
+
+	if code == 0 {
+		t.Fatalf("export into a missing directory exited 0; stdout: %s", h.stdout.String())
+	}
+	if got, err := h.store(t).Load(); err != nil || got != signedIn() {
+		t.Fatalf("Load after a failed export = %+v, %v; want the sign-in kept", got, err)
+	}
+}
+
+// export - | ssh host import - moves a sign-in without a file on either disk.
+func TestExportToStandardOutputPipesIntoImport(t *testing.T) {
+	laptop, server := newHarness(t), newHarness(t)
+	laptop.saveCredentials(t, signedIn())
+
+	if code := cli.Run(context.Background(), []string{"export", "-"}, laptop.env()); code != 0 {
+		t.Fatalf("export - exit code = %d; stderr: %s", code, laptop.stderr.String())
+	}
+	server.stdin = strings.NewReader(laptop.stdout.String())
+	if code := cli.Run(context.Background(), []string{"import", "-"}, server.env()); code != 0 {
+		t.Fatalf("import - exit code = %d; stderr: %s; export stdout: %q", code, server.stderr.String(), laptop.stdout.String())
+	}
+
+	if got, err := server.store(t).Load(); err != nil || got != signedIn() {
+		t.Fatalf("server Load = %+v, %v; want the exported sign-in", got, err)
+	}
+	if _, err := laptop.store(t).Load(); !errors.Is(err, store.ErrNoCredentials) {
+		t.Fatalf("laptop Load after export -: err = %v, want ErrNoCredentials", err)
+	}
+}
+
+// brokenPipe fails every write, like a pipe whose reader has exited.
+type brokenPipe struct{}
+
+func (brokenPipe) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+func TestAnExportThatCannotWriteToStandardOutputKeepsTheSignIn(t *testing.T) {
+	h := newHarness(t)
+	h.saveCredentials(t, signedIn())
+	env := h.env()
+	env.Stdout = brokenPipe{}
+
+	code := cli.Run(context.Background(), []string{"export", "-"}, env)
+
+	if code == 0 {
+		t.Fatal("export - into a broken pipe exited 0")
+	}
+	if got, err := h.store(t).Load(); err != nil || got != signedIn() {
+		t.Fatalf("Load after a failed export - = %+v, %v; want the sign-in kept", got, err)
+	}
+}

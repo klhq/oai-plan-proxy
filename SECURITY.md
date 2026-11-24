@@ -27,7 +27,9 @@ ChatGPT plan until you sign out, so the design keeps that token in one place.
   flight, so one runaway caller cannot spend the plan all at once.
 - **Storage.** `credentials.json` and `host_id` live in
   `OAI_PLAN_PROXY_DATA_DIR`. The directory is created with mode `0700` and
-  the files with mode `0600`. `export` writes its file with mode `0600`.
+  the files with mode `0600`. `export` moves the sign-in, so only one
+  host holds the refresh token at a time. `export -` writes it to standard
+  output for a pipe, and `export <file>` writes a file with mode `0600`.
 - **Sign-in.** `login` uses the authorization code flow with PKCE and checks
   `state` on every callback, including a pasted one. A copied callback
   address is useless without the verifier, which never leaves the process.

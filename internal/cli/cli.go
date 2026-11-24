@@ -75,7 +75,7 @@ func Run(ctx context.Context, args []string, env Env) int {
 	case "logout":
 		return runLogout(ctx, env)
 	case "export":
-		return runExport(args[1:], env)
+		return runExport(ctx, args[1:], env)
 	case "import":
 		return runImport(ctx, args[1:], env)
 	case "healthcheck":
@@ -215,8 +215,11 @@ func runLogout(ctx context.Context, env Env) int {
 	return 0
 }
 
-// runExport writes the stored credentials to a file another host can import.
-func runExport(args []string, env Env) int {
+// runExport moves the stored sign-in to a file another host can import.
+// It deletes the local credentials once the file is written, without
+// revoking them: the refresh token rotates on every use, so two hosts
+// holding it would end up invalidating each other. The host ID stays.
+func runExport(ctx context.Context, args []string, env Env) int {
 	if len(args) != 1 {
 		fmt.Fprintln(env.Stderr, "usage: oai-plan-proxy export <file>")
 		return 2
@@ -226,6 +229,14 @@ func runExport(args []string, env Env) int {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
 	}
+	// Hold the lock so a serve on this data directory cannot refresh, and
+	// rotate the token, between the read and the delete.
+	unlock, err := st.Lock(ctx)
+	if err != nil {
+		fmt.Fprintln(env.Stderr, err)
+		return 1
+	}
+	defer unlock()
 	c, err := st.Load()
 	if err != nil {
 		fmt.Fprintln(env.Stderr, err)
@@ -235,7 +246,11 @@ func runExport(args []string, env Env) int {
 		fmt.Fprintln(env.Stderr, err)
 		return 1
 	}
-	fmt.Fprintf(env.Stdout, "Exported the sign-in to %s. It holds live tokens: move it over SSH and delete it after import.\n", args[0])
+	if err := st.Delete(); err != nil {
+		fmt.Fprintf(env.Stderr, "%v\nthe sign-in is in %s and still on this host; delete one copy\n", err, args[0])
+		return 1
+	}
+	fmt.Fprintf(env.Stdout, "Moved the sign-in to %s; this host no longer holds it. The file holds live tokens: copy it over SSH, import it, and delete it.\n", args[0])
 	return 0
 }
 
